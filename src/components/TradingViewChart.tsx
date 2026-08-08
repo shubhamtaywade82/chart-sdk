@@ -3644,6 +3644,106 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
             </button>
           </div>
         </div>
+
+        {/* ROW 3: Floating Live AI Execution Directive HUD (flows below indicators, never overlaps) */}
+        {showAdaptiveSupertrend && allCandlesRef.current.length > 5 && (() => {
+          try {
+            const candles = allCandlesRef.current;
+            const baseline = loadSupertrendParams();
+            const activeParams = getActiveSupertrendParams();
+            const isAdapted =
+              activeParams.atrLen !== baseline.atrLen ||
+              activeParams.fallbackMult !== baseline.fallbackMult ||
+              activeParams.percentileRank !== baseline.percentileRank ||
+              activeParams.minMult !== baseline.minMult ||
+              activeParams.maxMult !== baseline.maxMult;
+            const engine = new AdaptiveSupertrend(
+              activeParams.atrLen,
+              activeParams.fallbackMult,
+              activeParams.percentileRank,
+              150,
+              25,
+              activeParams.minMult,
+              activeParams.maxMult
+            );
+            const sig = engine.update(candles);
+            const regime = MarketRegimeEngine.evaluateMarketRegime(candles);
+            const isChop = regime.isChop;
+            const isBuy = sig.trend === "UP";
+            const isPrime = sig.confidenceTier === "PRIME" || sig.confidence >= 85;
+            const isTake = sig.confidence >= 70 && sig.type !== "HOLD" && !isChop;
+            const currency = adapter.currency || "$";
+
+            return (
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  flexWrap: "wrap",
+                  gap: "8px",
+                  width: "fit-content",
+                  maxWidth: "calc(100vw - 24px)",
+                  background: "rgba(10, 13, 20, 0.9)",
+                  backdropFilter: "blur(10px)",
+                  border: `1px solid ${
+                    isTake
+                      ? isBuy
+                        ? "rgba(0, 245, 160, 0.45)"
+                        : "rgba(255, 73, 92, 0.45)"
+                      : isChop
+                      ? "rgba(255, 73, 92, 0.4)"
+                      : "rgba(255, 215, 0, 0.45)"
+                  }`,
+                  borderRadius: "6px",
+                  padding: "5px 12px",
+                  boxShadow: "0 4px 20px rgba(0,0,0,0.6)",
+                  fontSize: "11px",
+                  fontWeight: 800,
+                  pointerEvents: "none",
+                }}
+              >
+                <span
+                  style={{
+                    color: isTake ? (isBuy ? "#00F5A0" : "#FF495C") : isChop ? "#FF495C" : "#FFD700",
+                    display: "flex",
+                    alignItems: "center",
+                    gap: "4px",
+                  }}
+                >
+                  {isTake
+                    ? isBuy
+                      ? "🟢 DIRECTIVE: TAKE LONG TRADE"
+                      : "🔴 DIRECTIVE: TAKE SHORT TRADE"
+                    : isChop
+                    ? `⛔ DIRECTIVE: STAND ASIDE (CHOP ${regime.chopIndex} > 61.8)`
+                    : "⛔ DIRECTIVE: STAND ASIDE / AVOID"}
+                </span>
+                <span style={{ color: "var(--text-muted)", fontWeight: 500 }}>·</span>
+                <span style={{ color: isPrime ? "#FFD700" : "#00F5A0" }}>
+                  AI CONFIDENCE: {sig.confidence}% ({sig.confidenceTier})
+                </span>
+                <span style={{ color: "var(--text-muted)", fontWeight: 500 }}>·</span>
+                <span style={{ color: regime.chopIndex >= 61.8 ? "#FF495C" : regime.chopIndex <= 38.2 ? "#00F5A0" : "#FFD700" }}>
+                  CHOP: {regime.chopIndex} {regime.chopIndex >= 61.8 ? "(HIGH CHOP)" : regime.chopIndex <= 38.2 ? "(TRENDING)" : ""}
+                </span>
+                <span style={{ color: "var(--text-muted)", fontWeight: 500 }}>·</span>
+                <span style={{ color: regime.adx >= 25 ? "#00F5A0" : "#FF495C" }}>
+                  ADX: {regime.adx}
+                </span>
+                <span style={{ color: "var(--text-muted)", fontWeight: 500 }}>·</span>
+                <span style={{ color: "var(--text-secondary)", fontFamily: "monospace" }}>
+                  STOP: {currency}{sig.stop.toLocaleString()}
+                </span>
+                <span style={{ color: "var(--text-muted)", fontWeight: 500 }}>·</span>
+                <span style={{ color: isAdapted ? "#00F5A0" : "var(--accent-cyan)", fontFamily: "monospace", fontSize: "10px" }}>
+                  {isAdapted ? "⚡ LIVE-ADAPTED" : "AI-ADAPTIVE"}: ATR{activeParams.atrLen} · {activeParams.fallbackMult.toFixed(1)}x · P{activeParams.percentileRank} · {activeParams.minMult.toFixed(1)}-{activeParams.maxMult.toFixed(1)}x
+                </span>
+              </div>
+            );
+          } catch (e) {
+            return null;
+          }
+        })()}
       </div>
 
 
@@ -3994,107 +4094,6 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
           AUTO
         </button>
       </div>
-
-      {/* Floating Live AI Execution Directive HUD */}
-      {showAdaptiveSupertrend && allCandlesRef.current.length > 5 && (() => {
-        try {
-          const candles = allCandlesRef.current;
-          const baseline = loadSupertrendParams();
-          const activeParams = getActiveSupertrendParams();
-          const isAdapted =
-            activeParams.atrLen !== baseline.atrLen ||
-            activeParams.fallbackMult !== baseline.fallbackMult ||
-            activeParams.percentileRank !== baseline.percentileRank ||
-            activeParams.minMult !== baseline.minMult ||
-            activeParams.maxMult !== baseline.maxMult;
-          const engine = new AdaptiveSupertrend(
-            activeParams.atrLen,
-            activeParams.fallbackMult,
-            activeParams.percentileRank,
-            150,
-            25,
-            activeParams.minMult,
-            activeParams.maxMult
-          );
-          const sig = engine.update(candles);
-          const regime = MarketRegimeEngine.evaluateMarketRegime(candles);
-          const isChop = regime.isChop;
-          const isBuy = sig.trend === "UP";
-          const isPrime = sig.confidenceTier === "PRIME" || sig.confidence >= 85;
-          const isTake = sig.confidence >= 70 && sig.type !== "HOLD" && !isChop;
-          const currency = adapter.currency || "$";
-
-          return (
-            <div
-              style={{
-                position: "absolute",
-                top: "42px",
-                left: "14px",
-                zIndex: 12,
-                display: "flex",
-                alignItems: "center",
-                gap: "8px",
-                background: "rgba(10, 13, 20, 0.9)",
-                backdropFilter: "blur(10px)",
-                border: `1px solid ${
-                  isTake
-                    ? isBuy
-                      ? "rgba(0, 245, 160, 0.45)"
-                      : "rgba(255, 73, 92, 0.45)"
-                    : isChop
-                    ? "rgba(255, 73, 92, 0.4)"
-                    : "rgba(255, 215, 0, 0.45)"
-                }`,
-                borderRadius: "6px",
-                padding: "5px 12px",
-                boxShadow: "0 4px 20px rgba(0,0,0,0.6)",
-                fontSize: "11px",
-                fontWeight: 800,
-                pointerEvents: "none",
-              }}
-            >
-              <span
-                style={{
-                  color: isTake ? (isBuy ? "#00F5A0" : "#FF495C") : isChop ? "#FF495C" : "#FFD700",
-                  display: "flex",
-                  alignItems: "center",
-                  gap: "4px",
-                }}
-              >
-                {isTake
-                  ? isBuy
-                    ? "🟢 DIRECTIVE: TAKE LONG TRADE"
-                    : "🔴 DIRECTIVE: TAKE SHORT TRADE"
-                  : isChop
-                  ? `⛔ DIRECTIVE: STAND ASIDE (CHOP ${regime.chopIndex} > 61.8)`
-                  : "⛔ DIRECTIVE: STAND ASIDE / AVOID"}
-              </span>
-              <span style={{ color: "var(--text-muted)", fontWeight: 500 }}>·</span>
-              <span style={{ color: isPrime ? "#FFD700" : "#00F5A0" }}>
-                AI CONFIDENCE: {sig.confidence}% ({sig.confidenceTier})
-              </span>
-              <span style={{ color: "var(--text-muted)", fontWeight: 500 }}>·</span>
-              <span style={{ color: regime.chopIndex >= 61.8 ? "#FF495C" : regime.chopIndex <= 38.2 ? "#00F5A0" : "#FFD700" }}>
-                CHOP: {regime.chopIndex} {regime.chopIndex >= 61.8 ? "(HIGH CHOP)" : regime.chopIndex <= 38.2 ? "(TRENDING)" : ""}
-              </span>
-              <span style={{ color: "var(--text-muted)", fontWeight: 500 }}>·</span>
-              <span style={{ color: regime.adx >= 25 ? "#00F5A0" : "#FF495C" }}>
-                ADX: {regime.adx}
-              </span>
-              <span style={{ color: "var(--text-muted)", fontWeight: 500 }}>·</span>
-              <span style={{ color: "var(--text-secondary)", fontFamily: "monospace" }}>
-                STOP: {currency}{sig.stop.toLocaleString()}
-              </span>
-              <span style={{ color: "var(--text-muted)", fontWeight: 500 }}>·</span>
-              <span style={{ color: isAdapted ? "#00F5A0" : "var(--accent-cyan)", fontFamily: "monospace", fontSize: "10px" }}>
-                {isAdapted ? "⚡ LIVE-ADAPTED" : "AI-ADAPTIVE"}: ATR{activeParams.atrLen} · {activeParams.fallbackMult.toFixed(1)}x · P{activeParams.percentileRank} · {activeParams.minMult.toFixed(1)}-{activeParams.maxMult.toFixed(1)}x
-              </span>
-            </div>
-          );
-        } catch (e) {
-          return null;
-        }
-      })()}
 
       {/* Canvas Container */}
       <div ref={chartContainerRef} style={{ width: "100%", height: "100%", minHeight: "520px" }} />
