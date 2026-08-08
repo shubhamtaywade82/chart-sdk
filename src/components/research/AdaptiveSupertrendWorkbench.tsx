@@ -29,8 +29,8 @@ import {
   TimeframePerformanceCard,
   ParamAdaptationEntry,
   sharedParamAdapter,
-  loadSupertrendParams,
-  saveSupertrendParams,
+  loadSupertrendConfig,
+  saveSupertrendConfig,
   loadSupertrendAutoAdapt,
   saveSupertrendAutoAdapt,
 } from "../../utils/adaptiveSupertrend";
@@ -50,6 +50,8 @@ interface AdaptiveSupertrendWorkbenchProps {
   livePrice?: number;
 }
 
+const SWEEP_TIMEFRAMES = ["5m", "15m", "1h", "4h", "1D"];
+
 export const AdaptiveSupertrendWorkbench: React.FC<AdaptiveSupertrendWorkbenchProps> = ({
   adapter,
   selectedSymbol,
@@ -57,7 +59,7 @@ export const AdaptiveSupertrendWorkbench: React.FC<AdaptiveSupertrendWorkbenchPr
   livePrice,
 }) => {
   // Strategy Parameters (initialized from last applied session config)
-  const [initialSupertrendParams] = useState(() => loadSupertrendParams());
+  const [initialSupertrendParams] = useState(() => loadSupertrendConfig());
   const [atrLen, setAtrLen] = useState<number>(initialSupertrendParams.atrLen);
   const [fallbackMult, setFallbackMult] = useState<number>(initialSupertrendParams.fallbackMult);
   const [percentileRank, setPercentileRank] = useState<number>(initialSupertrendParams.percentileRank);
@@ -67,11 +69,11 @@ export const AdaptiveSupertrendWorkbench: React.FC<AdaptiveSupertrendWorkbenchPr
   const [maxMult, setMaxMult] = useState<number>(initialSupertrendParams.maxMult);
   const [initialEquity, setInitialEquity] = useState<number>(100000);
   const [riskPct, setRiskPct] = useState<number>(1.0);
-  const [minConfidence, setMinConfidence] = useState<number>(0);
-  const [takeProfitR, setTakeProfitR] = useState<number>(0);
-  const [useLlmFilter, setUseLlmFilter] = useState<boolean>(true);
+  const [minConfidence, setMinConfidence] = useState<number>(initialSupertrendParams.minConfidence);
+  const [takeProfitR, setTakeProfitR] = useState<number>(initialSupertrendParams.takeProfitR);
+  const [useLlmFilter, setUseLlmFilter] = useState<boolean>(initialSupertrendParams.useLlmFilter);
   const [useOrderFlow, setUseOrderFlow] = useState<boolean>(true);
-  const [useChopFilter, setUseChopFilter] = useState<boolean>(true);
+  const [useChopFilter, setUseChopFilter] = useState<boolean>(initialSupertrendParams.useChopFilter);
 
   // Timeframe and State
   const [currentInterval, setCurrentInterval] = useState<string>(selectedInterval || "15m");
@@ -112,20 +114,32 @@ export const AdaptiveSupertrendWorkbench: React.FC<AdaptiveSupertrendWorkbenchPr
     setUseLlmFilter(preset.params.useLlmFilter);
   };
 
-  const handleRunOptimizer = () => {
+  // Run the 15-config grid per timeframe, then rank globally across all timeframes
+  const runSweepAcrossTfs = async (): Promise<OptimizationCandidate[]> => {
+    const all: OptimizationCandidate[] = [];
+    for (const tf of SWEEP_TIMEFRAMES) {
+      const fetched = await adapter.fetchCandles(selectedSymbol, tf, 1000);
+      if (!fetched || fetched.length < 100) continue;
+      for (const c of AdaptiveSupertrend.runGridSearch(fetched, initialEquity, riskPct / 100)) {
+        all.push({ ...c, interval: tf });
+      }
+    }
+    all.sort((a, b) => b.fitnessScore - a.fitnessScore);
+    return all.map((c, i) => ({ ...c, rank: i + 1 }));
+  };
+
+  const handleRunOptimizer = async () => {
     setIsOptimizing(true);
     setIsLLMSweeping(false);
     setActiveTab("optimizer");
-    setTimeout(() => {
-      try {
-        const candidates = AdaptiveSupertrend.runGridSearch(candles, initialEquity, riskPct / 100);
-        setOptimizationCandidates(candidates);
-      } catch (e) {
-        console.error("Optimizer error:", e);
-      } finally {
-        setIsOptimizing(false);
-      }
-    }, 60);
+    try {
+      const candidates = await runSweepAcrossTfs();
+      setOptimizationCandidates(candidates);
+    } catch (e) {
+      console.error("Optimizer error:", e);
+    } finally {
+      setIsOptimizing(false);
+    }
   };
 
   // Run math sweep → then validate top-5 candidates with Ollama (1 LLM call per candidate)
@@ -134,10 +148,10 @@ export const AdaptiveSupertrendWorkbench: React.FC<AdaptiveSupertrendWorkbenchPr
     setIsLLMSweeping(true);
     setActiveTab("optimizer");
 
-    // Step 1: Run full 486-combo math sweep (sync, fast)
+    // Step 1: Run the grid per timeframe, ranked globally (sync-computed, async fetch)
     let candidates: OptimizationCandidate[] = [];
     try {
-      candidates = AdaptiveSupertrend.runGridSearch(candles, initialEquity, riskPct / 100);
+      candidates = await runSweepAcrossTfs();
     } catch (e) {
       console.error("Grid search error:", e);
       setIsOptimizing(false);
@@ -154,7 +168,6 @@ export const AdaptiveSupertrendWorkbench: React.FC<AdaptiveSupertrendWorkbenchPr
     setIsOptimizing(false);
 
     // Step 2: Evaluate top-5 with Ollama one at a time (sequential to avoid parallel rate limits)
-    const activeTf = currentInterval || selectedInterval || "15m";
     for (let i = 0; i < Math.min(5, marked.length); i++) {
       // Mark as evaluating
       setOptimizationCandidates((prev) =>
@@ -165,7 +178,7 @@ export const AdaptiveSupertrendWorkbench: React.FC<AdaptiveSupertrendWorkbenchPr
         const c = marked[i];
         const result = await ollama.evaluateStrategyWithLLM({
           symbol: selectedSymbol,
-          interval: activeTf,
+          interval: c.interval || "15m",
           atrLen: c.params.atrLen,
           fallbackMult: c.params.fallbackMult,
           percentileRank: c.params.percentileRank,
@@ -182,7 +195,7 @@ export const AdaptiveSupertrendWorkbench: React.FC<AdaptiveSupertrendWorkbenchPr
         setOptimizationCandidates((prev) =>
           prev.map((c2, idx) =>
             idx === i
-              ? { ...c2, llmScore: result.score, llmRationale: result.rationale, llmApproved: result.approved, llmStatus: "done" }
+              ? { ...c2, llmScore: result.score, llmRationale: result.rationale, llmApproved: result.approved, llmModel: result.model, llmSimulated: result.isSimulated, llmStatus: "done" }
               : c2
           )
         );
@@ -206,6 +219,10 @@ export const AdaptiveSupertrendWorkbench: React.FC<AdaptiveSupertrendWorkbenchPr
     setMinConfidence(c.params.minConfidence);
     setTakeProfitR(c.params.takeProfitR);
     setUseChopFilter(c.params.useChopFilter);
+    if (c.interval && c.interval !== currentInterval) {
+      setCurrentInterval(c.interval);
+      window.dispatchEvent(new CustomEvent("binance:set-interval", { detail: c.interval }));
+    }
     setActiveTab("metrics");
   };
 
@@ -286,10 +303,20 @@ export const AdaptiveSupertrendWorkbench: React.FC<AdaptiveSupertrendWorkbenchPr
   const [adaptationLog, setAdaptationLog] = useState<ParamAdaptationEntry[]>([]);
   const [lastRegime, setLastRegime] = useState<MarketRegimeTelemetry | null>(null);
 
-  // Persist active params so the chart overlay uses the same config
+  // Persist active config so the chart overlay + next session use the same settings
   useEffect(() => {
-    saveSupertrendParams({ atrLen, fallbackMult, percentileRank, minMult, maxMult });
-  }, [atrLen, fallbackMult, percentileRank, minMult, maxMult]);
+    saveSupertrendConfig({
+      atrLen,
+      fallbackMult,
+      percentileRank,
+      minMult,
+      maxMult,
+      minConfidence,
+      takeProfitR,
+      useChopFilter,
+      useLlmFilter,
+    });
+  }, [atrLen, fallbackMult, percentileRank, minMult, maxMult, minConfidence, takeProfitR, useChopFilter, useLlmFilter]);
 
   useEffect(() => {
     saveSupertrendAutoAdapt(autoAdapt);
@@ -1472,6 +1499,7 @@ export const AdaptiveSupertrendWorkbench: React.FC<AdaptiveSupertrendWorkbenchPr
                     <thead>
                       <tr style={{ borderBottom: "1px solid rgba(255, 255, 255, 0.1)", color: "var(--text-muted)" }}>
                         <th style={{ padding: "8px" }}>RANK</th>
+                        <th style={{ padding: "8px" }}>TF</th>
                         <th style={{ padding: "8px" }}>PARAMETERS</th>
                         <th style={{ padding: "8px" }}>WIN RATE</th>
                         <th style={{ padding: "8px" }}>PROFIT FACTOR</th>
@@ -1497,6 +1525,9 @@ export const AdaptiveSupertrendWorkbench: React.FC<AdaptiveSupertrendWorkbenchPr
                           >
                             <td style={{ padding: "8px", fontWeight: 800, color: isTop1 ? "#00F5A0" : "#FFFFFF" }}>
                               {isTop1 ? "🥇 #1 BEST" : `#${cand.rank}`}
+                            </td>
+                            <td style={{ padding: "8px", fontWeight: 800, color: cand.interval === currentInterval ? "#00F5A0" : "var(--accent-cyan)" }}>
+                              {(cand.interval || "15m").toUpperCase()}
                             </td>
                             <td style={{ padding: "8px", fontFamily: "var(--font-mono)", fontSize: "10.5px" }}>
                               ATR {cand.params.atrLen} · {cand.params.fallbackMult}x · P{cand.params.percentileRank} · Conf ≥{cand.params.minConfidence}% · {cand.params.takeProfitR === 0 ? "Flip Exit" : `${cand.params.takeProfitR}R`} · Chop: {cand.params.useChopFilter ? "ON" : "OFF"}
@@ -1547,8 +1578,23 @@ export const AdaptiveSupertrendWorkbench: React.FC<AdaptiveSupertrendWorkbenchPr
                             {/* AI Verdict */}
                             <td style={{ padding: "8px", fontSize: "10px", maxWidth: "220px", color: "var(--text-secondary)" }}>
                               {cand.llmStatus === "done" && cand.llmRationale ? (
-                                <span title={cand.llmRationale}>
-                                  {cand.llmApproved ? "✅ " : "⛔ "}{cand.llmRationale.slice(0, 80)}{cand.llmRationale.length > 80 ? "…" : ""}
+                                <span
+                                  title={cand.llmRationale}
+                                  style={{ display: "flex", flexDirection: "column", gap: "3px" }}
+                                >
+                                  <span>
+                                    {cand.llmApproved ? "✅ " : "⛔ "}{cand.llmRationale.slice(0, 80)}{cand.llmRationale.length > 80 ? "…" : ""}
+                                  </span>
+                                  <span
+                                    style={{
+                                      fontSize: "9px",
+                                      fontWeight: 700,
+                                      color: cand.llmSimulated ? "#FFD700" : "var(--accent-cyan)",
+                                    }}
+                                  >
+                                    {cand.llmSimulated ? "⚠ " : "🤖 "}
+                                    {cand.llmModel || "unknown"}
+                                  </span>
                                 </span>
                               ) : cand.llmStatus === "evaluating" ? (
                                 <span style={{ color: "#FFD700" }}>Evaluating...</span>

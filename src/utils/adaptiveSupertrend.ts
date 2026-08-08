@@ -838,6 +838,7 @@ export interface StrategyPreset {
 
 export interface OptimizationCandidate {
   rank: number;
+  interval?: string; // timeframe the backtest ran on (null = single-TF sweep)
   params: {
     atrLen: number;
     fallbackMult: number;
@@ -854,6 +855,8 @@ export interface OptimizationCandidate {
   llmScore?: number;        // 0–100 composite AI rating
   llmRationale?: string;    // Ollama's plain-English reasoning
   llmApproved?: boolean;    // Whether LLM recommends this config
+  llmModel?: string;        // Actual model that produced the verdict (or "heuristic")
+  llmSimulated?: boolean;   // True when the deterministic fallback was used
   llmStatus?: "pending" | "evaluating" | "done" | "error";
 }
 
@@ -1065,36 +1068,84 @@ export class SupertrendParamAdapter {
 }
 
 const PARAMS_STORAGE_KEY = "chart_supertrend_params";
+
+/** True once the user has applied/saved a config — until then the chart keeps its built-in 70% safety gate. */
+export function isSupertrendConfigApplied(): boolean {
+  if (typeof window === "undefined") return false;
+  try {
+    return localStorage.getItem(PARAMS_STORAGE_KEY) !== null;
+  } catch {
+    return false;
+  }
+}
 const AUTO_ADAPT_STORAGE_KEY = "chart_supertrend_auto_adapt";
 
 /** Singleton so the chart overlay and the workbench share regime/cooldown state. */
 export const sharedParamAdapter = new SupertrendParamAdapter();
 
-export function saveSupertrendParams(params: SupertrendParamSet): void {
+/** Full applied config (math params + risk gates) persisted across sessions. */
+export interface SupertrendPersistedConfig extends SupertrendParamSet {
+  minConfidence: number;
+  takeProfitR: number;
+  useChopFilter: boolean;
+  useLlmFilter: boolean;
+}
+
+export function saveSupertrendConfig(cfg: SupertrendPersistedConfig): void {
   if (typeof window === "undefined") return;
   try {
-    localStorage.setItem(PARAMS_STORAGE_KEY, JSON.stringify(params));
+    localStorage.setItem(PARAMS_STORAGE_KEY, JSON.stringify(cfg));
   } catch {}
 }
 
-export function loadSupertrendParams(): SupertrendParamSet {
-  const def: SupertrendParamSet = { atrLen: 10, fallbackMult: 3.0, percentileRank: 85, minMult: 1.0, maxMult: 6.0 };
+export function loadSupertrendConfig(): SupertrendPersistedConfig {
+  const def: SupertrendPersistedConfig = {
+    atrLen: 10,
+    fallbackMult: 3.0,
+    percentileRank: 85,
+    minMult: 1.0,
+    maxMult: 6.0,
+    minConfidence: 0,
+    takeProfitR: 0,
+    useChopFilter: true,
+    useLlmFilter: true,
+  };
   if (typeof window === "undefined") return def;
   try {
     const raw = localStorage.getItem(PARAMS_STORAGE_KEY);
     if (!raw) return def;
     const p = JSON.parse(raw);
     const num = (v: unknown, d: number): number => (typeof v === "number" && Number.isFinite(v) ? v : d);
+    const bool = (v: unknown, d: boolean): boolean => (typeof v === "boolean" ? v : d);
     return {
       atrLen: num(p.atrLen, def.atrLen),
       fallbackMult: num(p.fallbackMult, def.fallbackMult),
       percentileRank: num(p.percentileRank, def.percentileRank),
       minMult: num(p.minMult, def.minMult),
       maxMult: num(p.maxMult, def.maxMult),
+      minConfidence: num(p.minConfidence, def.minConfidence),
+      takeProfitR: num(p.takeProfitR, def.takeProfitR),
+      useChopFilter: bool(p.useChopFilter, def.useChopFilter),
+      useLlmFilter: bool(p.useLlmFilter, def.useLlmFilter),
     };
   } catch {
     return def;
   }
+}
+
+export function saveSupertrendParams(params: SupertrendParamSet): void {
+  saveSupertrendConfig({ ...loadSupertrendConfig(), ...params });
+}
+
+export function loadSupertrendParams(): SupertrendParamSet {
+  const c = loadSupertrendConfig();
+  return {
+    atrLen: c.atrLen,
+    fallbackMult: c.fallbackMult,
+    percentileRank: c.percentileRank,
+    minMult: c.minMult,
+    maxMult: c.maxMult,
+  };
 }
 
 export function saveSupertrendAutoAdapt(enabled: boolean): void {

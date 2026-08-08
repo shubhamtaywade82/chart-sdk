@@ -32,7 +32,7 @@ import {
   detectVolumeProfile,
   VolumeProfileResult,
 } from "../utils/smcEngine";
-import { AdaptiveSupertrend, SupertrendPoint, TrendDirection, SupertrendParamSet, sharedParamAdapter, loadSupertrendParams, saveSupertrendParams, loadSupertrendAutoAdapt } from "../utils/adaptiveSupertrend";
+import { AdaptiveSupertrend, SupertrendPoint, TrendDirection, SupertrendParamSet, sharedParamAdapter, loadSupertrendParams, saveSupertrendParams, loadSupertrendAutoAdapt, loadSupertrendConfig, isSupertrendConfigApplied } from "../utils/adaptiveSupertrend";
 import { MarketRegimeEngine } from "../utils/marketRegimeEngine";
 
 export function getPricePrecision(price: number): { precision: number; minMove: number } {
@@ -3671,7 +3671,10 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
             const isChop = regime.isChop;
             const isBuy = sig.trend === "UP";
             const isPrime = sig.confidenceTier === "PRIME" || sig.confidence >= 85;
-            const isTake = sig.confidence >= 70 && sig.type !== "HOLD" && !isChop;
+            const appliedCfg = isSupertrendConfigApplied() ? loadSupertrendConfig() : null;
+            const minConf = appliedCfg ? appliedCfg.minConfidence : 70;
+            const chopBlocks = appliedCfg ? appliedCfg.useChopFilter && isChop : isChop;
+            const isTake = sig.confidence >= minConf && sig.type !== "HOLD" && !chopBlocks;
             const currency = adapter.currency || "$";
 
             return (
@@ -3690,7 +3693,7 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
                       ? isBuy
                         ? "rgba(0, 245, 160, 0.45)"
                         : "rgba(255, 73, 92, 0.45)"
-                      : isChop
+                      : chopBlocks
                       ? "rgba(255, 73, 92, 0.4)"
                       : "rgba(255, 215, 0, 0.45)"
                   }`,
@@ -3714,13 +3717,17 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
                     ? isBuy
                       ? "🟢 DIRECTIVE: TAKE LONG TRADE"
                       : "🔴 DIRECTIVE: TAKE SHORT TRADE"
-                    : isChop
+                    : chopBlocks
                     ? `⛔ DIRECTIVE: STAND ASIDE (CHOP ${regime.chopIndex} > 61.8)`
                     : "⛔ DIRECTIVE: STAND ASIDE / AVOID"}
                 </span>
                 <span style={{ color: "var(--text-muted)", fontWeight: 500 }}>·</span>
                 <span style={{ color: isPrime ? "#FFD700" : "#00F5A0" }}>
                   AI CONFIDENCE: {sig.confidence}% ({sig.confidenceTier})
+                </span>
+                <span style={{ color: "var(--text-muted)", fontWeight: 500 }}>·</span>
+                <span style={{ color: sig.confidence >= minConf ? "#00F5A0" : "#FF495C", fontFamily: "monospace" }}>
+                  GATE: ≥{minConf}%
                 </span>
                 <span style={{ color: "var(--text-muted)", fontWeight: 500 }}>·</span>
                 <span style={{ color: regime.chopIndex >= 61.8 ? "#FF495C" : regime.chopIndex <= 38.2 ? "#00F5A0" : "#FFD700" }}>

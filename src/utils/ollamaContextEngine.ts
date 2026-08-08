@@ -122,6 +122,29 @@ export class OllamaContextEngine {
   }
 
   /**
+   * Tolerantly parses the model's reply: strips markdown fences, leading prose,
+   * and trailing text, and also scans the thinking field (thinking-capable
+   * models like qwen3.5 put reasoning there and may leave content empty).
+   */
+  private extractJsonObject(text: string): Record<string, unknown> | null {
+    const candidates = [text, text.replace(/```(?:json)?\s*([\s\S]*?)```/g, "$1")];
+    for (const raw of candidates) {
+      const clean = raw.trim();
+      if (!clean) continue;
+      try {
+        const parsed = JSON.parse(clean);
+        if (parsed && typeof parsed === "object") return parsed;
+      } catch {}
+      try {
+        const stripped = clean.replace(/^[^{]*/, "").replace(/[^}]*$/, "");
+        const parsed = JSON.parse(stripped);
+        if (parsed && typeof parsed === "object") return parsed;
+      } catch {}
+    }
+    return null;
+  }
+
+  /**
    * Evaluates a trade signal against the local Ollama LLM endpoint or falls back gracefully.
    */
   public async validateTradeWithLLM(
@@ -151,10 +174,11 @@ export class OllamaContextEngine {
             { role: "user", content: userPrompt },
           ],
           stream: false,
+          think: false,
           format: "json",
           options: {
             temperature: 0.1,
-            num_predict: 120,
+            num_predict: 400,
           },
         }),
       });
@@ -163,17 +187,18 @@ export class OllamaContextEngine {
 
       if (res.ok) {
         const json = await res.json();
-        const rawContent = json?.message?.content || "";
-        const parsed = JSON.parse(rawContent.trim());
-
-        return {
-          approve: Boolean(parsed.approve),
-          reason: String(parsed.reason || "Approved by local Ollama AI model"),
-          size_multiplier: Math.max(0.5, Math.min(2.0, Number(parsed.size_multiplier) || 1.0)),
-          model: this.config.model || "llama3",
-          latencyMs: Date.now() - startTime,
-          isSimulated: false,
-        };
+        const rawContent = (json?.message?.content || "") + "\n" + (json?.message?.thinking || "");
+        const parsed = this.extractJsonObject(rawContent);
+        if (parsed) {
+          return {
+            approve: Boolean(parsed.approve),
+            reason: String(parsed.reason || "Approved by local Ollama AI model"),
+            size_multiplier: Math.max(0.5, Math.min(2.0, Number(parsed.size_multiplier) || 1.0)),
+            model: this.config.model || "llama3",
+            latencyMs: Date.now() - startTime,
+            isSimulated: false,
+          };
+        }
       }
     } catch (e: any) {
       // If local Ollama is offline / unreachable, fallback to high-speed deterministic heuristic evaluator
@@ -303,7 +328,7 @@ export class OllamaContextEngine {
     netProfitPct: number;
     totalTrades: number;
     fitnessScore: number;
-  }): Promise<{ score: number; rationale: string; approved: boolean }> {
+  }): Promise<{ score: number; rationale: string; approved: boolean; model: string; isSimulated: boolean }> {
     const startTime = Date.now();
 
     const systemPrompt =
@@ -335,8 +360,9 @@ export class OllamaContextEngine {
             { role: "user", content: userPrompt },
           ],
           stream: false,
+          think: false,
           format: "json",
-          options: { temperature: 0.15, num_predict: 80 },
+          options: { temperature: 0.15, num_predict: 600 },
         }),
       });
 
@@ -344,12 +370,17 @@ export class OllamaContextEngine {
 
       if (res.ok) {
         const json = await res.json();
-        const parsed = JSON.parse((json?.message?.content || "").trim());
-        return {
-          score: Math.max(0, Math.min(100, Number(parsed.score) || 50)),
-          rationale: String(parsed.rationale || "").slice(0, 140),
-          approved: Boolean(parsed.approved),
-        };
+        const rawContent = (json?.message?.content || "") + "\n" + (json?.message?.thinking || "");
+        const parsed = this.extractJsonObject(rawContent);
+        if (parsed) {
+          return {
+            score: Math.max(0, Math.min(100, Number(parsed.score) || 50)),
+            rationale: String(parsed.rationale || "").slice(0, 140),
+            approved: Boolean(parsed.approved),
+            model: this.config.model || "llama3",
+            isSimulated: false,
+          };
+        }
       }
     } catch {
       // Ollama offline — use deterministic scoring
@@ -371,6 +402,8 @@ export class OllamaContextEngine {
       score: Math.max(0, score),
       rationale: `Heuristic (Ollama offline, ${latency}ms): WR ${params.winRatePct}% × PF ${params.profitFactor.toFixed(1)} / DD ${params.maxDrawdownPct}%.`,
       approved,
+      model: "heuristic",
+      isSimulated: true,
     };
   }
 }

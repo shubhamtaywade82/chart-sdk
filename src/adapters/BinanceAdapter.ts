@@ -63,14 +63,31 @@ export class BinanceAdapter implements IDataAdapter {
     // Close any existing connection
     this.wsRef?.close();
 
-    const ws = new WebSocket(`/ws/binance?symbol=${encodeURIComponent(symbol)}&interval=${encodeURIComponent(interval)}`);
+    const ws = new WebSocket(`/ws/binance/feed?symbol=${encodeURIComponent(symbol)}&interval=${encodeURIComponent(interval)}`);
     this.wsRef = ws;
+
+    ws.onopen = () => {
+      try {
+        ws.send(JSON.stringify({ type: "subscribe", symbol }));
+      } catch {}
+    };
 
     ws.onmessage = (e) => {
       try {
         const msg = JSON.parse(e.data);
         if (msg.type === "candle" && msg.candle) onCandle(msg.candle);
-        if (msg.type === "tick")   onTick({ price: msg.price, bid: msg.bid, ask: msg.ask, spread: msg.ask - msg.bid });
+        if (msg.type === "tick") {
+          const bid = msg.bids?.[0]?.price ?? msg.price ?? 0;
+          const ask = msg.asks?.[0]?.price ?? msg.price ?? 0;
+          onTick({
+            price: msg.ltp ?? msg.price ?? 0,
+            bid,
+            ask,
+            spread: Math.max(0, ask - bid),
+            bidQty: msg.bids?.[0]?.quantity,
+            askQty: msg.asks?.[0]?.quantity,
+          });
+        }
       } catch {}
     };
 
@@ -84,7 +101,12 @@ export class BinanceAdapter implements IDataAdapter {
   ): () => void {
     // The server embeds bids/asks in every tick message on the main feed socket.
     // There is no separate /ws/binance/depth endpoint — read from the main path.
-    const ws = new WebSocket(`/ws/binance?symbol=${encodeURIComponent(symbol)}&interval=1`);
+    const ws = new WebSocket(`/ws/binance/feed?symbol=${encodeURIComponent(symbol)}&interval=1`);
+    ws.onopen = () => {
+      try {
+        ws.send(JSON.stringify({ type: "subscribe", symbol }));
+      } catch {}
+    };
     ws.onmessage = (e) => {
       try {
         const msg = JSON.parse(e.data);

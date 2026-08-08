@@ -110,6 +110,16 @@ export function App() {
     localStorage.setItem("binance_selectedInterval", selectedInterval);
   }, [selectedInterval]);
 
+  // Workbench APPLY can switch the chart interval (e.g. sweep winner on another TF)
+  useEffect(() => {
+    const onSetInterval = (e: Event) => {
+      const tf = (e as CustomEvent).detail;
+      if (typeof tf === "string") setSelectedInterval(tf);
+    };
+    window.addEventListener("binance:set-interval", onSetInterval);
+    return () => window.removeEventListener("binance:set-interval", onSetInterval);
+  }, []);
+
   useEffect(() => {
     localStorage.setItem("binance_showLeftSidebar", String(showLeftSidebar));
   }, [showLeftSidebar]);
