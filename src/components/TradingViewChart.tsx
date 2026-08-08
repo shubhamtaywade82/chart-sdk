@@ -32,7 +32,7 @@ import {
   detectVolumeProfile,
   VolumeProfileResult,
 } from "../utils/smcEngine";
-import { AdaptiveSupertrend, SupertrendPoint, TrendDirection, SupertrendParamSet, sharedParamAdapter, loadSupertrendParams, saveSupertrendParams, loadSupertrendAutoAdapt, loadSupertrendConfig, isSupertrendConfigApplied } from "../utils/adaptiveSupertrend";
+import { AdaptiveSupertrend, SupertrendPoint, TrendDirection, SupertrendParamSet, sharedParamAdapter, loadSupertrendParams, saveSupertrendParams, loadSupertrendAutoAdapt, loadSupertrendConfig } from "../utils/adaptiveSupertrend";
 import { MarketRegimeEngine } from "../utils/marketRegimeEngine";
 
 export function getPricePrecision(price: number): { precision: number; minMove: number } {
@@ -494,6 +494,15 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
   const posEntryLineRef = useRef<IPriceLine | null>(null);
   const posStopLineRef = useRef<IPriceLine | null>(null);
   const posTargetLineRef = useRef<IPriceLine | null>(null);
+
+  // Persistent engine for the live directive HUD — recreated only when symbol/interval/params change,
+  // so trend-flip detection and pullback samples carry across renders (a fresh engine can never emit BUY/SELL).
+  const hudEngineRef = useRef<AdaptiveSupertrend | null>(null);
+  const hudEngineKeyRef = useRef<string>("");
+  const symbolRef = useRef<string>(symbol);
+  symbolRef.current = symbol;
+  const intervalRef = useRef<string>(interval);
+  intervalRef.current = interval;
 
   const candlesVersion = (candles: any[]) => {
     const last = candles[candles.length - 1];
@@ -2490,7 +2499,7 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
                   Math.floor(toDateObj.getTime() / 1000)
                 );
 
-                if (histCandles && histCandles.length > 0 && isSubscribed) {
+                if (histCandles && histCandles.length > 0 && isSubscribed && symbolRef.current === symbol && intervalRef.current === interval) {
                   const histCandlesMapped = histCandles.map((c: any) => ({
                     time: Number(c.time),
                     open: Number(c.open),
@@ -2592,6 +2601,7 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
         const olderCandles = await props.adapter.fetchHistoricalCandles(
           symbol, interval, Math.floor(new Date(fromDate).getTime() / 1000), toTs
         );
+        if (!isSubscribed || symbolRef.current !== symbol || intervalRef.current !== interval) return;
         const is24x7 = adapter?.is24x7 ?? true;
         if (olderCandles?.length) {
           const older = sanitizeAndSortCandles(olderCandles, is24x7).filter(
@@ -2619,6 +2629,7 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
       if (!isSubscribed || customCandles?.length) return;
       try {
         const fresh = await props.adapter.fetchCandles(symbol, interval);
+        if (!isSubscribed || symbolRef.current !== symbol || intervalRef.current !== interval) return;
         if (fresh?.length && seriesRef.current) {
           const is24x7 = adapter?.is24x7 ?? true;
           const authoritativeCandles = sanitizeAndSortCandles(fresh, is24x7);
@@ -2725,7 +2736,9 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
             // Reconcile ALL previous candles with the Binance authoritative intraday endpoint 2.5s post-close
             setTimeout(async () => {
               try {
+                if (symbolRef.current !== symbol || intervalRef.current !== interval || !seriesRef.current) return;
                 const fresh = await props.adapter.fetchCandles(symbol, interval);
+                if (symbolRef.current !== symbol || intervalRef.current !== interval || !seriesRef.current) return;
                 if (fresh?.length && seriesRef.current) {
                   const is24x7 = adapter?.is24x7 ?? true;
                   const authoritativeCandles = sanitizeAndSortCandles(fresh, is24x7);
@@ -3657,23 +3670,31 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
               activeParams.percentileRank !== baseline.percentileRank ||
               activeParams.minMult !== baseline.minMult ||
               activeParams.maxMult !== baseline.maxMult;
-            const engine = new AdaptiveSupertrend(
-              activeParams.atrLen,
-              activeParams.fallbackMult,
-              activeParams.percentileRank,
-              150,
-              25,
-              activeParams.minMult,
-              activeParams.maxMult
-            );
-            const sig = engine.update(candles);
+            // Reuse the engine across renders (flip detection + sample history live on the instance);
+            // recreate only when symbol/interval/params change, seeding samples from loaded history.
+            const engineKey = `${symbolRef.current}|${intervalRef.current}|${activeParams.atrLen}|${activeParams.fallbackMult}|${activeParams.percentileRank}|${activeParams.minMult}|${activeParams.maxMult}`;
+            if (!hudEngineRef.current || hudEngineKeyRef.current !== engineKey) {
+              const eng = new AdaptiveSupertrend(
+                activeParams.atrLen,
+                activeParams.fallbackMult,
+                activeParams.percentileRank,
+                150,
+                25,
+                activeParams.minMult,
+                activeParams.maxMult
+              );
+              eng.warmUpFromHistory(candles);
+              hudEngineRef.current = eng;
+              hudEngineKeyRef.current = engineKey;
+            }
+            const sig = hudEngineRef.current.update(candles);
             const regime = MarketRegimeEngine.evaluateMarketRegime(candles);
             const isChop = regime.isChop;
             const isBuy = sig.trend === "UP";
             const isPrime = sig.confidenceTier === "PRIME" || sig.confidence >= 85;
-            const appliedCfg = isSupertrendConfigApplied() ? loadSupertrendConfig() : null;
-            const minConf = appliedCfg ? appliedCfg.minConfidence : 70;
-            const chopBlocks = appliedCfg ? appliedCfg.useChopFilter && isChop : isChop;
+            const cfg = loadSupertrendConfig();
+            const minConf = cfg.minConfidence;
+            const chopBlocks = cfg.useChopFilter && isChop;
             const isTake = sig.confidence >= minConf && sig.type !== "HOLD" && !chopBlocks;
             const currency = adapter.currency || "$";
 

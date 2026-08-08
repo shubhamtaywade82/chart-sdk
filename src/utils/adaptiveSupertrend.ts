@@ -256,6 +256,17 @@ export class AdaptiveSupertrend {
   }
 
   /**
+   * Pre-seeds the pullback sample buffers and trend/band state from candle history so
+   * a freshly created engine reports the same confidence scale as the backtest.
+   * Replays the state machine over history WITHOUT emitting signals (last bar excluded).
+   */
+  public warmUpFromHistory(candles: Candle[]): void {
+    for (let i = 1; i < candles.length - 1; i++) {
+      this.update(candles.slice(0, i + 1));
+    }
+  }
+
+  /**
    * Generates a complete series of Supertrend points across an entire candle array for chart rendering.
    */
   public computeFullSeries(candles: Candle[]): SupertrendPoint[] {
@@ -1068,16 +1079,6 @@ export class SupertrendParamAdapter {
 }
 
 const PARAMS_STORAGE_KEY = "chart_supertrend_params";
-
-/** True once the user has applied/saved a config — until then the chart keeps its built-in 70% safety gate. */
-export function isSupertrendConfigApplied(): boolean {
-  if (typeof window === "undefined") return false;
-  try {
-    return localStorage.getItem(PARAMS_STORAGE_KEY) !== null;
-  } catch {
-    return false;
-  }
-}
 const AUTO_ADAPT_STORAGE_KEY = "chart_supertrend_auto_adapt";
 
 /** Singleton so the chart overlay and the workbench share regime/cooldown state. */
@@ -1105,7 +1106,7 @@ export function loadSupertrendConfig(): SupertrendPersistedConfig {
     percentileRank: 85,
     minMult: 1.0,
     maxMult: 6.0,
-    minConfidence: 0,
+    minConfidence: 70,
     takeProfitR: 0,
     useChopFilter: true,
     useLlmFilter: true,

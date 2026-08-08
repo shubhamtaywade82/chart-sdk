@@ -69,36 +69,61 @@ export class BinanceAdapter implements IDataAdapter {
     const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
     const host = window.location.host;
     const wsUrl = `${protocol}//${host}/ws/binance/feed?symbol=${encodeURIComponent(symbol)}&interval=${encodeURIComponent(interval)}`;
-    const ws = new WebSocket(wsUrl);
-    this.wsRef = ws;
 
-    ws.onopen = () => {
-      try {
-        ws.send(JSON.stringify({ type: "subscribe", symbol }));
-      } catch {}
+    let cancelled = false;
+    let ws: WebSocket | null = null;
+    let retryCount = 0;
+    let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+
+    const connect = () => {
+      if (cancelled) return;
+      ws = new WebSocket(wsUrl);
+      this.wsRef = ws;
+
+      ws.onopen = () => {
+        try {
+          retryCount = 0;
+          ws?.send(JSON.stringify({ type: "subscribe", symbol }));
+        } catch {}
+      };
+
+      ws.onmessage = (e) => {
+        try {
+          const msg = JSON.parse(e.data);
+          if (msg.securityId && String(msg.securityId).toLowerCase() !== symbol.toLowerCase()) return;
+          if (msg.type === "candle" && msg.candle) onCandle(msg.candle);
+          if (msg.type === "tick") {
+            const bid = msg.bids?.[0]?.price ?? msg.price ?? 0;
+            const ask = msg.asks?.[0]?.price ?? msg.price ?? 0;
+            onTick({
+              price: msg.ltp ?? msg.price ?? 0,
+              bid,
+              ask,
+              spread: Math.max(0, ask - bid),
+              bidQty: msg.bids?.[0]?.quantity,
+              askQty: msg.asks?.[0]?.quantity,
+            });
+          }
+        } catch {}
+      };
+
+      const scheduleReconnect = () => {
+        if (cancelled) return;
+        const delay = Math.min(30000, 1000 * 2 ** retryCount);
+        retryCount += 1;
+        if (reconnectTimer) clearTimeout(reconnectTimer);
+        reconnectTimer = setTimeout(connect, delay);
+      };
+      ws.onclose = scheduleReconnect;
+      ws.onerror = scheduleReconnect;
     };
 
-    ws.onmessage = (e) => {
-      try {
-        const msg = JSON.parse(e.data);
-        if (msg.type === "candle" && msg.candle) onCandle(msg.candle);
-        if (msg.type === "tick") {
-          const bid = msg.bids?.[0]?.price ?? msg.price ?? 0;
-          const ask = msg.asks?.[0]?.price ?? msg.price ?? 0;
-          onTick({
-            price: msg.ltp ?? msg.price ?? 0,
-            bid,
-            ask,
-            spread: Math.max(0, ask - bid),
-            bidQty: msg.bids?.[0]?.quantity,
-            askQty: msg.asks?.[0]?.quantity,
-          });
-        }
-      } catch {}
-    };
+    connect();
 
     return () => {
-      try { ws.close(); } catch {}
+      cancelled = true;
+      if (reconnectTimer) clearTimeout(reconnectTimer);
+      try { ws?.close(); } catch {}
       if (this.wsRef === ws) {
         this.wsRef = null;
       }
@@ -114,25 +139,50 @@ export class BinanceAdapter implements IDataAdapter {
     const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
     const host = window.location.host;
     const wsUrl = `${protocol}//${host}/ws/binance/feed?symbol=${encodeURIComponent(symbol)}&interval=1`;
-    const ws = new WebSocket(wsUrl);
 
-    ws.onopen = () => {
-      try {
-        ws.send(JSON.stringify({ type: "subscribe", symbol }));
-      } catch {}
+    let cancelled = false;
+    let ws: WebSocket | null = null;
+    let retryCount = 0;
+    let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+
+    const connect = () => {
+      if (cancelled) return;
+      ws = new WebSocket(wsUrl);
+
+      ws.onopen = () => {
+        try {
+          retryCount = 0;
+          ws?.send(JSON.stringify({ type: "subscribe", symbol }));
+        } catch {}
+      };
+      ws.onmessage = (e) => {
+        try {
+          const msg = JSON.parse(e.data);
+          if (msg.securityId && String(msg.securityId).toLowerCase() !== symbol.toLowerCase()) return;
+          if (msg.type === "tick" && Array.isArray(msg.bids) && Array.isArray(msg.asks)) {
+            const bids = msg.bids.map((b: any) => ({ price: b.price, qty: b.qty ?? b.quantity ?? 0, quantity: b.quantity ?? b.qty ?? 0, orders: b.orders }));
+            const asks = msg.asks.map((a: any) => ({ price: a.price, qty: a.qty ?? a.quantity ?? 0, quantity: a.quantity ?? a.qty ?? 0, orders: a.orders }));
+            onUpdate(bids, asks);
+          }
+        } catch {}
+      };
+      const scheduleReconnect = () => {
+        if (cancelled) return;
+        const delay = Math.min(30000, 1000 * 2 ** retryCount);
+        retryCount += 1;
+        if (reconnectTimer) clearTimeout(reconnectTimer);
+        reconnectTimer = setTimeout(connect, delay);
+      };
+      ws.onclose = scheduleReconnect;
+      ws.onerror = scheduleReconnect;
     };
-    ws.onmessage = (e) => {
-      try {
-        const msg = JSON.parse(e.data);
-        if (msg.type === "tick" && Array.isArray(msg.bids) && Array.isArray(msg.asks)) {
-          const bids = msg.bids.map((b: any) => ({ price: b.price, qty: b.qty ?? b.quantity ?? 0, quantity: b.quantity ?? b.qty ?? 0, orders: b.orders }));
-          const asks = msg.asks.map((a: any) => ({ price: a.price, qty: a.qty ?? a.quantity ?? 0, quantity: a.quantity ?? a.qty ?? 0, orders: a.orders }));
-          onUpdate(bids, asks);
-        }
-      } catch {}
-    };
+
+    connect();
+
     return () => {
-      try { ws.close(); } catch {}
+      cancelled = true;
+      if (reconnectTimer) clearTimeout(reconnectTimer);
+      try { ws?.close(); } catch {}
     };
   }
 

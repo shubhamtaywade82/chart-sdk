@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from "react";
+import React, { useState, useEffect, useMemo, useRef } from "react";
 import {
   Brain,
   TrendingUp,
@@ -80,6 +80,10 @@ export const AdaptiveSupertrendWorkbench: React.FC<AdaptiveSupertrendWorkbenchPr
   const [mtfScanResults, setMtfScanResults] = useState<TimeframePerformanceCard[]>([]);
   const [isScanningMtf, setIsScanningMtf] = useState<boolean>(false);
 
+  // Guards against stale async results after symbol switch/unmount
+  const sweepEpochRef = useRef(0);
+  const prevSymbolRef = useRef<string>(selectedSymbol);
+
   // Ollama Model Configuration (Auto-set to installed local model llama3.2:3b)
   const [ollamaHost, setOllamaHost] = useState<string>("http://localhost:11434");
   const [ollamaModel, setOllamaModel] = useState<string>("llama3.2:3b");
@@ -116,9 +120,11 @@ export const AdaptiveSupertrendWorkbench: React.FC<AdaptiveSupertrendWorkbenchPr
 
   // Run the 15-config grid per timeframe, then rank globally across all timeframes
   const runSweepAcrossTfs = async (): Promise<OptimizationCandidate[]> => {
+    const epoch = sweepEpochRef.current;
     const all: OptimizationCandidate[] = [];
     for (const tf of SWEEP_TIMEFRAMES) {
       const fetched = await adapter.fetchCandles(selectedSymbol, tf, 1000);
+      if (sweepEpochRef.current !== epoch) return []; // stale — symbol switched or unmounted
       if (!fetched || fetched.length < 100) continue;
       for (const c of AdaptiveSupertrend.runGridSearch(fetched, initialEquity, riskPct / 100)) {
         all.push({ ...c, interval: tf });
@@ -158,6 +164,11 @@ export const AdaptiveSupertrendWorkbench: React.FC<AdaptiveSupertrendWorkbenchPr
       setIsLLMSweeping(false);
       return;
     }
+    if (!candidates.length) {
+      setIsOptimizing(false);
+      setIsLLMSweeping(false);
+      return;
+    }
 
     // Mark top-5 as pending LLM validation, rest as no-status
     const marked = candidates.map((c, idx) => ({
@@ -168,7 +179,9 @@ export const AdaptiveSupertrendWorkbench: React.FC<AdaptiveSupertrendWorkbenchPr
     setIsOptimizing(false);
 
     // Step 2: Evaluate top-5 with Ollama one at a time (sequential to avoid parallel rate limits)
+    const epoch = sweepEpochRef.current;
     for (let i = 0; i < Math.min(5, marked.length); i++) {
+      if (sweepEpochRef.current !== epoch) return; // symbol switched or unmounted mid-loop
       // Mark as evaluating
       setOptimizationCandidates((prev) =>
         prev.map((c, idx) => (idx === i ? { ...c, llmStatus: "evaluating" } : c))
@@ -192,6 +205,7 @@ export const AdaptiveSupertrendWorkbench: React.FC<AdaptiveSupertrendWorkbenchPr
           totalTrades: c.summary.totalTrades,
           fitnessScore: c.fitnessScore,
         });
+        if (sweepEpochRef.current !== epoch) return;
         setOptimizationCandidates((prev) =>
           prev.map((c2, idx) =>
             idx === i
@@ -200,6 +214,7 @@ export const AdaptiveSupertrendWorkbench: React.FC<AdaptiveSupertrendWorkbenchPr
           )
         );
       } catch (e) {
+        if (sweepEpochRef.current !== epoch) return;
         setOptimizationCandidates((prev) =>
           prev.map((c2, idx) => (idx === i ? { ...c2, llmStatus: "error" } : c2))
         );
@@ -227,6 +242,7 @@ export const AdaptiveSupertrendWorkbench: React.FC<AdaptiveSupertrendWorkbenchPr
   };
 
   const handleRunMtfScan = async () => {
+    const epoch = sweepEpochRef.current;
     setIsScanningMtf(true);
     setActiveTab("mtf_matrix");
     const intervals = ["1m", "3m", "5m", "15m", "30m", "1h", "4h", "1D"];
@@ -235,6 +251,7 @@ export const AdaptiveSupertrendWorkbench: React.FC<AdaptiveSupertrendWorkbenchPr
     for (const tf of intervals) {
       try {
         const fetched = await adapter.fetchCandles(selectedSymbol, tf, 500);
+        if (sweepEpochRef.current !== epoch) return; // stale — symbol switched or unmounted
         if (fetched && fetched.length >= 20) {
           const chop = MarketRegimeEngine.calculateChoppinessIndex(fetched, 14);
           const adxResult = MarketRegimeEngine.calculateADX(fetched, 14);
@@ -380,6 +397,15 @@ export const AdaptiveSupertrendWorkbench: React.FC<AdaptiveSupertrendWorkbenchPr
   // Load candle data for current symbol & interval
   useEffect(() => {
     let active = true;
+    const prevSymbol = prevSymbolRef.current;
+    prevSymbolRef.current = selectedSymbol;
+    if (prevSymbol && prevSymbol !== selectedSymbol) {
+      // Invalidate stale sweep/scan/backtest results when the symbol changes
+      sweepEpochRef.current += 1;
+      setOptimizationCandidates([]);
+      setMtfScanResults([]);
+      setBacktestResult(null);
+    }
     const loadData = async () => {
       setIsLoadingCandles(true);
       try {
@@ -400,6 +426,7 @@ export const AdaptiveSupertrendWorkbench: React.FC<AdaptiveSupertrendWorkbenchPr
     loadData();
     return () => {
       active = false;
+      sweepEpochRef.current += 1; // invalidate any in-flight sweep/LLM loop on cleanup
     };
   }, [selectedSymbol, currentInterval, selectedInterval, adapter]);
 
@@ -430,7 +457,7 @@ export const AdaptiveSupertrendWorkbench: React.FC<AdaptiveSupertrendWorkbenchPr
     if (candles.length >= 15) {
       runBacktest();
     }
-  }, [candles, atrLen, fallbackMult, percentileRank, minConfidence, initialEquity, riskPct, takeProfitR, useLlmFilter, useChopFilter]);
+  }, [candles, atrLen, fallbackMult, percentileRank, minConfidence, initialEquity, riskPct, takeProfitR, useLlmFilter, useChopFilter, minMult, maxMult]);
 
   // Live Ollama Sandbox test
   const handleTestOllama = async (type: "BUY" | "SELL") => {

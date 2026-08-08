@@ -168,38 +168,54 @@ export function App() {
     const wsUrl = `${protocol}//${window.location.host}/ws/feed`;
     let ws: WebSocket | null = null;
     let isCleanedUp = false;
+    let retryCount = 0;
+    let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 
-    try {
-      ws = new WebSocket(wsUrl);
-      wsRef.current = ws;
-      ws.onopen = () => {
-        if (!isCleanedUp) {
-          setWsConnected(true);
-          ws?.send(JSON.stringify({ type: "subscribe", symbol: selectedSymbol }));
-        }
-      };
-      ws.onmessage = (event) => {
-        if (isCleanedUp) return;
-        try {
-          const data = JSON.parse(event.data);
-          if (data.type === "tick") {
-            setTick(data);
-          }
-        } catch (e) {}
-      };
-      ws.onclose = () => {
-        if (!isCleanedUp) setWsConnected(false);
-      };
-      ws.onerror = () => {
-        if (!isCleanedUp) setWsConnected(false);
-      };
-    } catch (e) {
+    const scheduleReconnect = () => {
+      if (isCleanedUp) return;
       setWsConnected(false);
-    }
+      const delay = Math.min(30000, 1000 * 2 ** retryCount);
+      retryCount += 1;
+      if (reconnectTimer) clearTimeout(reconnectTimer);
+      reconnectTimer = setTimeout(connect, delay);
+    };
+
+    const connect = () => {
+      if (isCleanedUp) return;
+      try {
+        ws = new WebSocket(wsUrl);
+        wsRef.current = ws;
+        ws.onopen = () => {
+          if (!isCleanedUp) {
+            retryCount = 0;
+            setWsConnected(true);
+            ws?.send(JSON.stringify({ type: "subscribe", symbol: selectedSymbol }));
+          }
+        };
+        ws.onmessage = (event) => {
+          if (isCleanedUp) return;
+          try {
+            const data = JSON.parse(event.data);
+            if (data.type === "tick") {
+              if (data.securityId && String(data.securityId).toLowerCase() !== selectedSymbol.toLowerCase()) return;
+              setTick(data);
+            }
+          } catch (e) {}
+        };
+        ws.onclose = scheduleReconnect;
+        ws.onerror = scheduleReconnect;
+      } catch (e) {
+        setWsConnected(false);
+        scheduleReconnect();
+      }
+    };
+
+    connect();
 
     return () => {
       isCleanedUp = true;
       clearInterval(sessionTimer);
+      if (reconnectTimer) clearTimeout(reconnectTimer);
       if (ws) {
         if (ws.readyState === WebSocket.OPEN) {
           ws.close();
