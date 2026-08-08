@@ -32,7 +32,7 @@ import {
   detectVolumeProfile,
   VolumeProfileResult,
 } from "../utils/smcEngine";
-import { AdaptiveSupertrend, SupertrendPoint, TrendDirection } from "../utils/adaptiveSupertrend";
+import { AdaptiveSupertrend, SupertrendPoint, TrendDirection, SupertrendParamSet, sharedParamAdapter, loadSupertrendParams, saveSupertrendParams, loadSupertrendAutoAdapt } from "../utils/adaptiveSupertrend";
 import { MarketRegimeEngine } from "../utils/marketRegimeEngine";
 
 export function getPricePrecision(price: number): { precision: number; minMove: number } {
@@ -511,6 +511,19 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
       smcResultsRef.current[key] = compute();
     }
     return smcResultsRef.current[key] as T;
+  };
+
+  // Live-adaptive supertrend params: persisted baseline re-tuned by the shared
+  // regime adapter so the chart overlay mirrors the workbench in real time.
+  // Adaptations fire here are persisted so the workbench stays in sync.
+  const getActiveSupertrendParams = (): SupertrendParamSet => {
+    const baseline = loadSupertrendParams();
+    const candles = allCandlesRef.current;
+    if (!loadSupertrendAutoAdapt() || candles.length < 15) return baseline;
+    const entry = sharedParamAdapter.evaluate(baseline, MarketRegimeEngine.evaluateMarketRegime(candles));
+    if (!entry) return baseline;
+    saveSupertrendParams(entry.to);
+    return entry.to;
   };
 
   const latestNCandles = (n: number) => {
@@ -2115,10 +2128,22 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
     // 15. Render Adaptive Supertrend (AI-KNN dynamic trailing rail + flip markers)
     if (smcFlagsRef.current.adaptiveSupertrend && allCandlesRef.current.length > 5) {
       try {
-        const supertrendPoints: SupertrendPoint[] = getCached("adaptiveSupertrend", () => {
-          const supertrendEngine = new AdaptiveSupertrend(10, 3.0, 85, 150, 25, 1.0, 6.0);
-          return supertrendEngine.computeFullSeries(allCandlesRef.current);
-        });
+        const activeParams = getActiveSupertrendParams();
+        const supertrendPoints: SupertrendPoint[] = getCached(
+          `adaptiveSupertrend|${activeParams.atrLen}|${activeParams.fallbackMult}|${activeParams.percentileRank}|${activeParams.minMult}|${activeParams.maxMult}`,
+          () => {
+            const supertrendEngine = new AdaptiveSupertrend(
+              activeParams.atrLen,
+              activeParams.fallbackMult,
+              activeParams.percentileRank,
+              150,
+              25,
+              activeParams.minMult,
+              activeParams.maxMult
+            );
+            return supertrendEngine.computeFullSeries(allCandlesRef.current);
+          }
+        );
 
         if (supertrendPoints && supertrendPoints.length > 1) {
           const offset = allCandlesRef.current.length - supertrendPoints.length;
@@ -3974,7 +3999,23 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
       {showAdaptiveSupertrend && allCandlesRef.current.length > 5 && (() => {
         try {
           const candles = allCandlesRef.current;
-          const engine = new AdaptiveSupertrend(10, 3.0, 85, 150, 25, 1.0, 6.0);
+          const baseline = loadSupertrendParams();
+          const activeParams = getActiveSupertrendParams();
+          const isAdapted =
+            activeParams.atrLen !== baseline.atrLen ||
+            activeParams.fallbackMult !== baseline.fallbackMult ||
+            activeParams.percentileRank !== baseline.percentileRank ||
+            activeParams.minMult !== baseline.minMult ||
+            activeParams.maxMult !== baseline.maxMult;
+          const engine = new AdaptiveSupertrend(
+            activeParams.atrLen,
+            activeParams.fallbackMult,
+            activeParams.percentileRank,
+            150,
+            25,
+            activeParams.minMult,
+            activeParams.maxMult
+          );
           const sig = engine.update(candles);
           const regime = MarketRegimeEngine.evaluateMarketRegime(candles);
           const isChop = regime.isChop;
@@ -4043,6 +4084,10 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
               <span style={{ color: "var(--text-muted)", fontWeight: 500 }}>·</span>
               <span style={{ color: "var(--text-secondary)", fontFamily: "monospace" }}>
                 STOP: {currency}{sig.stop.toLocaleString()}
+              </span>
+              <span style={{ color: "var(--text-muted)", fontWeight: 500 }}>·</span>
+              <span style={{ color: isAdapted ? "#00F5A0" : "var(--accent-cyan)", fontFamily: "monospace", fontSize: "10px" }}>
+                {isAdapted ? "⚡ LIVE-ADAPTED" : "AI-ADAPTIVE"}: ATR{activeParams.atrLen} · {activeParams.fallbackMult.toFixed(1)}x · P{activeParams.percentileRank} · {activeParams.minMult.toFixed(1)}-{activeParams.maxMult.toFixed(1)}x
               </span>
             </div>
           );

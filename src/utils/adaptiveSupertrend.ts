@@ -1,5 +1,6 @@
 import type { Candle } from "../adapters/IDataAdapter";
 import { MarketRegimeEngine } from "./marketRegimeEngine";
+import type { MacroBias, MarketRegimeTelemetry, MarketRegimeType } from "./marketRegimeEngine";
 
 export type TrendDirection = "UP" | "DOWN" | "NEUTRAL";
 export type SignalType = "BUY" | "SELL" | "HOLD";
@@ -948,3 +949,166 @@ export const STRATEGY_PRESETS: StrategyPreset[] = [
     },
   },
 ];
+
+// ─────────────────────────────────────────────────────────────────────────────
+// IN-SESSION PARAMETER ADAPTATION
+// Re-tunes ATR length, fallback multiplier, percentile rank, and mult rails
+// from the live market regime, scaled around the user's baseline values.
+// A regime flip plus a cooldown prevents whipsaw re-tuning; every change is
+// recorded as an audit-log entry for the session view.
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface SupertrendParamSet {
+  atrLen: number;
+  fallbackMult: number;
+  percentileRank: number;
+  minMult: number;
+  maxMult: number;
+}
+
+export interface ParamAdaptationEntry {
+  time: number;
+  regime: MarketRegimeType;
+  chopIndex: number;
+  adx: number;
+  macroBias: MacroBias;
+  from: SupertrendParamSet;
+  to: SupertrendParamSet;
+  reason: string;
+}
+
+const clamp = (v: number, lo: number, hi: number): number => Math.max(lo, Math.min(hi, v));
+const round1 = (v: number): number => Math.round(v * 10) / 10;
+
+const paramsEqual = (a: SupertrendParamSet, b: SupertrendParamSet): boolean =>
+  a.atrLen === b.atrLen &&
+  a.fallbackMult === b.fallbackMult &&
+  a.percentileRank === b.percentileRank &&
+  a.minMult === b.minMult &&
+  a.maxMult === b.maxMult;
+
+export class SupertrendParamAdapter {
+  private lastAdaptation: { time: number; regime: MarketRegimeType } | null = null;
+
+  constructor(private cooldownMs: number = 3 * 60 * 1000) {}
+
+  public reset(): void {
+    this.lastAdaptation = null;
+  }
+
+  public evaluate(
+    current: SupertrendParamSet,
+    telemetry: MarketRegimeTelemetry
+  ): ParamAdaptationEntry | null {
+    const now = Date.now();
+    if (this.lastAdaptation && telemetry.regime === this.lastAdaptation.regime) return null;
+    if (this.lastAdaptation && now - this.lastAdaptation.time < this.cooldownMs) return null;
+
+    const to = this.targetFor(current, telemetry);
+    if (paramsEqual(current, to)) return null;
+
+    const entry: ParamAdaptationEntry = {
+      time: now,
+      regime: telemetry.regime,
+      chopIndex: telemetry.chopIndex,
+      adx: telemetry.adx,
+      macroBias: telemetry.macroBias,
+      from: { ...current },
+      to,
+      reason: this.reasonFor(current, to, telemetry),
+    };
+    this.lastAdaptation = { time: now, regime: telemetry.regime };
+    return entry;
+  }
+
+  /** Maps a regime to an adjusted param set, scaled around the user's baseline. */
+  private targetFor(current: SupertrendParamSet, t: MarketRegimeTelemetry): SupertrendParamSet {
+    switch (t.regime) {
+      case "TRENDING_EXPANSION":
+        return {
+          atrLen: clamp(Math.round(current.atrLen * 0.7), 5, 30),
+          fallbackMult: round1(clamp(current.fallbackMult * 0.85, 1.0, 6.0)),
+          percentileRank: clamp(current.percentileRank - 20, 50, 95),
+          minMult: current.minMult,
+          maxMult: round1(clamp(current.maxMult * 0.8, 1.0, 8.0)),
+        };
+      case "CHOPPY_COMPRESSION":
+        return {
+          atrLen: clamp(Math.round(current.atrLen * 1.4), 5, 30),
+          fallbackMult: round1(clamp(current.fallbackMult * 1.3, 1.0, 6.0)),
+          percentileRank: clamp(current.percentileRank + 15, 50, 95),
+          minMult: current.minMult,
+          maxMult: round1(clamp(current.maxMult * 1.1, 1.0, 8.0)),
+        };
+      case "VOLATILITY_SQUEEZE":
+        return {
+          atrLen: clamp(Math.round(current.atrLen * 1.15), 5, 30),
+          fallbackMult: round1(clamp(current.fallbackMult * 1.2, 1.0, 6.0)),
+          percentileRank: clamp(current.percentileRank + 10, 50, 95),
+          minMult: current.minMult,
+          maxMult: round1(clamp(current.maxMult * 1.1, 1.0, 8.0)),
+        };
+      default:
+        return { ...current }; // TRANSITION: keep user baseline
+    }
+  }
+
+  private reasonFor(from: SupertrendParamSet, to: SupertrendParamSet, t: MarketRegimeTelemetry): string {
+    const diffs: string[] = [];
+    if (from.atrLen !== to.atrLen) diffs.push(`ATR ${from.atrLen}→${to.atrLen}`);
+    if (from.fallbackMult !== to.fallbackMult) diffs.push(`Fallback ${from.fallbackMult}x→${to.fallbackMult}x`);
+    if (from.percentileRank !== to.percentileRank) diffs.push(`P${from.percentileRank}→P${to.percentileRank}`);
+    if (from.minMult !== to.minMult) diffs.push(`MinMult ${from.minMult}x→${to.minMult}x`);
+    if (from.maxMult !== to.maxMult) diffs.push(`MaxMult ${from.maxMult}x→${to.maxMult}x`);
+    return `${t.regime.replace(/_/g, " ")} (CHOP ${t.chopIndex}, ADX ${t.adx}, ${t.macroBias}): ${diffs.join(", ")}`;
+  }
+}
+
+const PARAMS_STORAGE_KEY = "chart_supertrend_params";
+const AUTO_ADAPT_STORAGE_KEY = "chart_supertrend_auto_adapt";
+
+/** Singleton so the chart overlay and the workbench share regime/cooldown state. */
+export const sharedParamAdapter = new SupertrendParamAdapter();
+
+export function saveSupertrendParams(params: SupertrendParamSet): void {
+  if (typeof window === "undefined") return;
+  try {
+    localStorage.setItem(PARAMS_STORAGE_KEY, JSON.stringify(params));
+  } catch {}
+}
+
+export function loadSupertrendParams(): SupertrendParamSet {
+  const def: SupertrendParamSet = { atrLen: 10, fallbackMult: 3.0, percentileRank: 85, minMult: 1.0, maxMult: 6.0 };
+  if (typeof window === "undefined") return def;
+  try {
+    const raw = localStorage.getItem(PARAMS_STORAGE_KEY);
+    if (!raw) return def;
+    const p = JSON.parse(raw);
+    const num = (v: unknown, d: number): number => (typeof v === "number" && Number.isFinite(v) ? v : d);
+    return {
+      atrLen: num(p.atrLen, def.atrLen),
+      fallbackMult: num(p.fallbackMult, def.fallbackMult),
+      percentileRank: num(p.percentileRank, def.percentileRank),
+      minMult: num(p.minMult, def.minMult),
+      maxMult: num(p.maxMult, def.maxMult),
+    };
+  } catch {
+    return def;
+  }
+}
+
+export function saveSupertrendAutoAdapt(enabled: boolean): void {
+  if (typeof window === "undefined") return;
+  try {
+    localStorage.setItem(AUTO_ADAPT_STORAGE_KEY, enabled ? "1" : "0");
+  } catch {}
+}
+
+export function loadSupertrendAutoAdapt(): boolean {
+  if (typeof window === "undefined") return true;
+  try {
+    return localStorage.getItem(AUTO_ADAPT_STORAGE_KEY) !== "0";
+  } catch {
+    return true;
+  }
+}

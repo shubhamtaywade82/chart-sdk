@@ -27,6 +27,12 @@ import {
   StrategyPreset,
   OptimizationCandidate,
   TimeframePerformanceCard,
+  ParamAdaptationEntry,
+  sharedParamAdapter,
+  loadSupertrendParams,
+  saveSupertrendParams,
+  loadSupertrendAutoAdapt,
+  saveSupertrendAutoAdapt,
 } from "../../utils/adaptiveSupertrend";
 import { OllamaContextEngine, LLMDecision } from "../../utils/ollamaContextEngine";
 import {
@@ -34,7 +40,7 @@ import {
   MarketTelemetrySnapshot,
   ComprehensiveTradeDirective,
 } from "../../utils/marketDataConsensus";
-import { MarketRegimeEngine } from "../../utils/marketRegimeEngine";
+import { MarketRegimeEngine, MarketRegimeTelemetry } from "../../utils/marketRegimeEngine";
 import type { IDataAdapter, Candle, OrderBookLevel } from "../../adapters/IDataAdapter";
 
 interface AdaptiveSupertrendWorkbenchProps {
@@ -50,14 +56,15 @@ export const AdaptiveSupertrendWorkbench: React.FC<AdaptiveSupertrendWorkbenchPr
   selectedInterval,
   livePrice,
 }) => {
-  // Strategy Parameters
-  const [atrLen, setAtrLen] = useState<number>(10);
-  const [fallbackMult, setFallbackMult] = useState<number>(3.0);
-  const [percentileRank, setPercentileRank] = useState<number>(85);
+  // Strategy Parameters (initialized from last applied session config)
+  const [initialSupertrendParams] = useState(() => loadSupertrendParams());
+  const [atrLen, setAtrLen] = useState<number>(initialSupertrendParams.atrLen);
+  const [fallbackMult, setFallbackMult] = useState<number>(initialSupertrendParams.fallbackMult);
+  const [percentileRank, setPercentileRank] = useState<number>(initialSupertrendParams.percentileRank);
   const [minSamples, setMinSamples] = useState<number>(25);
   const [maxSamples, setMaxSamples] = useState<number>(150);
-  const [minMult, setMinMult] = useState<number>(1.0);
-  const [maxMult, setMaxMult] = useState<number>(6.0);
+  const [minMult, setMinMult] = useState<number>(initialSupertrendParams.minMult);
+  const [maxMult, setMaxMult] = useState<number>(initialSupertrendParams.maxMult);
   const [initialEquity, setInitialEquity] = useState<number>(100000);
   const [riskPct, setRiskPct] = useState<number>(1.0);
   const [minConfidence, setMinConfidence] = useState<number>(0);
@@ -93,6 +100,7 @@ export const AdaptiveSupertrendWorkbench: React.FC<AdaptiveSupertrendWorkbenchPr
 
   const handleApplyPreset = (preset: StrategyPreset) => {
     setActivePresetId(preset.id);
+    sharedParamAdapter.reset();
     setAtrLen(preset.params.atrLen);
     setFallbackMult(preset.params.fallbackMult);
     setPercentileRank(preset.params.percentileRank);
@@ -189,6 +197,7 @@ export const AdaptiveSupertrendWorkbench: React.FC<AdaptiveSupertrendWorkbenchPr
   };
 
   const handleApplyCandidate = (c: OptimizationCandidate) => {
+    sharedParamAdapter.reset();
     setAtrLen(c.params.atrLen);
     setFallbackMult(c.params.fallbackMult);
     setPercentileRank(c.params.percentileRank);
@@ -272,6 +281,38 @@ export const AdaptiveSupertrendWorkbench: React.FC<AdaptiveSupertrendWorkbenchPr
     return new OllamaContextEngine({ host: ollamaHost, model: ollamaModel });
   }, [ollamaHost, ollamaModel]);
 
+  // In-session parameter adaptation (regime-driven re-tuning with audit log)
+  const [autoAdapt, setAutoAdapt] = useState<boolean>(() => loadSupertrendAutoAdapt());
+  const [adaptationLog, setAdaptationLog] = useState<ParamAdaptationEntry[]>([]);
+  const [lastRegime, setLastRegime] = useState<MarketRegimeTelemetry | null>(null);
+
+  // Persist active params so the chart overlay uses the same config
+  useEffect(() => {
+    saveSupertrendParams({ atrLen, fallbackMult, percentileRank, minMult, maxMult });
+  }, [atrLen, fallbackMult, percentileRank, minMult, maxMult]);
+
+  useEffect(() => {
+    saveSupertrendAutoAdapt(autoAdapt);
+  }, [autoAdapt]);
+
+  useEffect(() => {
+    if (!autoAdapt || candles.length < 15) return;
+    const regime = MarketRegimeEngine.evaluateMarketRegime(candles);
+    setLastRegime(regime);
+    const entry = sharedParamAdapter.evaluate(
+      { atrLen, fallbackMult, percentileRank, minMult, maxMult },
+      regime
+    );
+    if (!entry) return;
+    setAtrLen(entry.to.atrLen);
+    setFallbackMult(entry.to.fallbackMult);
+    setPercentileRank(entry.to.percentileRank);
+    setMinMult(entry.to.minMult);
+    setMaxMult(entry.to.maxMult);
+    setAdaptationLog((prev) => [entry, ...prev].slice(0, 25));
+    console.log(`[ParamAdapt ${new Date(entry.time).toLocaleTimeString()}] ${entry.reason}`);
+  }, [candles, autoAdapt, atrLen, fallbackMult, percentileRank, minMult, maxMult]);
+
   // Subscribe to live L2 Order Book Depth
   useEffect(() => {
     let unsub: (() => void) | undefined;
@@ -320,6 +361,9 @@ export const AdaptiveSupertrendWorkbench: React.FC<AdaptiveSupertrendWorkbenchPr
         if (active && fetched && fetched.length > 0) {
           setCandles(fetched);
         }
+        sharedParamAdapter.reset();
+        setAdaptationLog([]);
+        setLastRegime(null);
       } catch (e) {
         console.error("Failed to load candles for backtest:", e);
       } finally {
@@ -636,6 +680,7 @@ export const AdaptiveSupertrendWorkbench: React.FC<AdaptiveSupertrendWorkbenchPr
               style={{
                 display: "flex",
                 alignItems: "center",
+                justifyContent: "space-between",
                 gap: "8px",
                 fontSize: "12px",
                 fontWeight: 700,
@@ -645,8 +690,29 @@ export const AdaptiveSupertrendWorkbench: React.FC<AdaptiveSupertrendWorkbenchPr
                 marginBottom: "12px",
               }}
             >
-              <Sliders size={14} />
-              SUPERTREND AI MATH PARAMETERS
+              <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                <Sliders size={14} />
+                SUPERTREND AI MATH PARAMETERS
+              </div>
+              <label
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: "5px",
+                  fontSize: "10px",
+                  fontWeight: 800,
+                  color: autoAdapt ? "#00F5A0" : "var(--text-muted)",
+                  cursor: "pointer",
+                }}
+              >
+                <input
+                  type="checkbox"
+                  checked={autoAdapt}
+                  onChange={(e) => setAutoAdapt(e.target.checked)}
+                  style={{ accentColor: "#00F5A0", cursor: "pointer" }}
+                />
+                AUTO-ADAPT
+              </label>
             </div>
 
             <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
@@ -737,6 +803,77 @@ export const AdaptiveSupertrendWorkbench: React.FC<AdaptiveSupertrendWorkbenchPr
                 </div>
               </div>
             </div>
+
+            {/* REGIME + ADAPTATION LOG */}
+            {autoAdapt && (
+              <div
+                style={{
+                  marginTop: "10px",
+                  padding: "8px",
+                  background: "rgba(0, 0, 0, 0.35)",
+                  border: "1px solid rgba(0, 245, 160, 0.15)",
+                  borderRadius: "6px",
+                  fontSize: "10px",
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: "4px",
+                }}
+              >
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                  <span style={{ color: "var(--text-muted)", fontWeight: 700 }}>
+                    REGIME:{" "}
+                    <span
+                      style={{
+                        fontWeight: 800,
+                        color: lastRegime?.regime === "TRENDING_EXPANSION" ? "#00F5A0" : lastRegime?.regime === "CHOPPY_COMPRESSION" ? "#FFD700" : "var(--accent-cyan)",
+                      }}
+                    >
+                      {lastRegime?.regime || "CALIBRATING..."}
+                    </span>
+                  </span>
+                  <span style={{ color: "var(--text-muted)" }}>
+                    CHOP <b style={{ color: "#FFFFFF" }}>{lastRegime?.chopIndex ?? "—"}</b> · ADX{" "}
+                    <b style={{ color: "#FFFFFF" }}>{lastRegime?.adx ?? "—"}</b> · {lastRegime?.macroBias || "—"}
+                  </span>
+                </div>
+                <div style={{ color: "var(--text-muted)" }}>
+                  LAST ADAPT:{" "}
+                  <b style={{ color: "#FFFFFF" }}>
+                    {adaptationLog.length > 0 ? new Date(adaptationLog[0].time).toLocaleTimeString() : "—"}
+                  </b>
+                  {adaptationLog.length > 0 && (
+                    <span style={{ color: "var(--text-muted)" }}>
+                      {" "}
+                      · {adaptationLog.length} event{adaptationLog.length === 1 ? "" : "s"}
+                    </span>
+                  )}
+                </div>
+                {adaptationLog.length > 0 && (
+                  <div style={{ marginTop: "4px", maxHeight: "150px", overflowY: "auto" }}>
+                    {adaptationLog.map((e, i) => (
+                      <div
+                        key={e.time + "-" + i}
+                        style={{
+                          borderTop: "1px solid rgba(255, 255, 255, 0.07)",
+                          padding: "5px 0",
+                          display: "flex",
+                          flexDirection: "column",
+                          gap: "2px",
+                        }}
+                      >
+                        <div style={{ display: "flex", justifyContent: "space-between" }}>
+                          <span style={{ fontWeight: 800, color: "#FFD700" }}>
+                            {new Date(e.time).toLocaleTimeString()}
+                          </span>
+                          <span style={{ color: "var(--text-muted)" }}>{e.regime.replace(/_/g, " ")}</span>
+                        </div>
+                        <span style={{ color: "var(--text-secondary)", lineHeight: "1.4" }}>{e.reason}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
           </div>
 
           {/* 2. RISK & EXECUTION SETTINGS */}
