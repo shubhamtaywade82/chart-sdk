@@ -131,11 +131,11 @@ const voteFromSweep = (pools: LiquidityPoolPattern[], judas: ICTJudasSwing[], no
   const recentSwept = pools.filter((p) => p.swept && p.sweepTime && now - p.sweepTime < RECENT_WINDOW);
   if (recentSwept.length > 0) {
     const last = recentSwept.reduce((a, b) => ((b.sweepTime ?? 0) > (a.sweepTime ?? 0) ? b : a));
-    const bull = last.type === "BSL";
+    const bull = last.type === "SSL";
     return {
       name: "Liquidity Sweep",
       vote: bull ? "bullish" : "bearish",
-      detail: `${bull ? "BSL" : "SSL"} swept ${bull ? "above" : "below"} (stop run done)`,
+      detail: `${bull ? "SSL" : "BSL"} swept ${bull ? "below" : "above"} (stop run done)`,
     };
   }
   const lastJudas = judas[judas.length - 1];
@@ -251,19 +251,19 @@ const patternConf = (cp: CandlestickPattern[], bias: Bias): SetupFactor => {
 
 const longNotes = (input: SetupScanInput, price: number, side: "LONG" | "SHORT"): string[] => {
   if (side === "LONG") {
-    const sweep = input.liquidity.filter((p) => p.type === "BSL" && p.swept).sort((a, b) => (b.sweepTime ?? 0) - (a.sweepTime ?? 0))[0];
+    const sweep = input.liquidity.filter((p) => p.type === "SSL" && p.swept).sort((a, b) => (b.sweepTime ?? 0) - (a.sweepTime ?? 0))[0];
     const demand = input.ob.filter((o) => o.type === "BULLISH_OB" && !o.mitigated).sort((a, b) => b.bottom - a.bottom)[0];
     const target = input.liquidity.filter((p) => p.type === "BSL" && !p.swept && p.level > price).sort((a, b) => a.level - b.level)[0];
     return [
-      `Long on retrace into demand OB/FVG${demand ? ` (stop below ${demand.bottom.toFixed(2)})` : ""}${sweep ? ` — BSL swept at ${sweep.level.toFixed(2)}` : ""}`,
+      `Long on retrace into demand OB/FVG${demand ? ` (stop below ${demand.bottom.toFixed(2)})` : ""}${sweep ? ` — SSL swept at ${sweep.level.toFixed(2)}` : ""}`,
       target ? `Target: next untapped BSL at ${target.level.toFixed(2)}` : "Target: nearest untapped BSL above",
     ];
   }
-  const sweep = input.liquidity.filter((p) => p.type === "SSL" && p.swept).sort((a, b) => (b.sweepTime ?? 0) - (a.sweepTime ?? 0))[0];
+  const sweep = input.liquidity.filter((p) => p.type === "BSL" && p.swept).sort((a, b) => (b.sweepTime ?? 0) - (a.sweepTime ?? 0))[0];
   const supply = input.ob.filter((o) => o.type === "BEARISH_OB" && !o.mitigated).sort((a, b) => a.top - b.top)[0];
   const target = input.liquidity.filter((p) => p.type === "SSL" && !p.swept && p.level < price).sort((a, b) => b.level - a.level)[0];
   return [
-    `Short on retrace into supply OB/FVG${supply ? ` (stop above ${supply.top.toFixed(2)})` : ""}${sweep ? ` — SSL swept at ${sweep.level.toFixed(2)}` : ""}`,
+    `Short on retrace into supply OB/FVG${supply ? ` (stop above ${supply.top.toFixed(2)})` : ""}${sweep ? ` — BSL swept at ${sweep.level.toFixed(2)}` : ""}`,
     target ? `Target: next untapped SSL at ${target.level.toFixed(2)}` : "Target: nearest untapped SSL below",
   ];
 };

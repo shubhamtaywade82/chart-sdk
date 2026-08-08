@@ -363,14 +363,14 @@ export class MarketDataConsensusEngine {
         ? {
             price: maxBid.price,
             quantity: Number((maxBid.qty || maxBid.quantity || 0).toFixed(2)),
-            distancePct: Number((((currentPrice - maxBid.price) / currentPrice) * 100).toFixed(2)),
+            distancePct: currentPrice > 0 ? Number((((currentPrice - maxBid.price) / currentPrice) * 100).toFixed(2)) : 0,
           }
         : null,
       maxAskWall: maxAsk
         ? {
             price: maxAsk.price,
             quantity: Number((maxAsk.qty || maxAsk.quantity || 0).toFixed(2)),
-            distancePct: Number((((maxAsk.price - currentPrice) / currentPrice) * 100).toFixed(2)),
+            distancePct: currentPrice > 0 ? Number((((maxAsk.price - currentPrice) / currentPrice) * 100).toFixed(2)) : 0,
           }
         : null,
       spreadPrice,

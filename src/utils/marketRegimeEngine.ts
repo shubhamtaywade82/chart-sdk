@@ -177,7 +177,11 @@ export class MarketRegimeEngine {
 
     let trSum = 0;
     for (let i = 1; i < slice.length; i++) {
-      trSum += Math.max(slice[i].high - slice[i].low, Math.abs(slice[i].high - slice[i - 1].close));
+      trSum += Math.max(
+        slice[i].high - slice[i].low,
+        Math.abs(slice[i].high - slice[i - 1].close),
+        Math.abs(slice[i].low - slice[i - 1].close)
+      );
     }
     const atr = trSum / (length - 1 || 1);
     const kcUpper = mean + atr * 1.5;

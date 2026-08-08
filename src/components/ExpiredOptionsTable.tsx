@@ -242,7 +242,7 @@ export const ExpiredOptionsTable: React.FC<ExpiredOptionsTableProps> = ({
   const exportCSV = () => {
     if (!candles || candles.length === 0) return;
     const targetStrike = spotInfo?.calculatedStrike || atmStrike;
-    const headers = ["Timestamp,Date (IST),Symbol,Spot Price,Strike,Option Type,Moneyness,Open,High,Low,Close,Change,Range,Intrinsic Value,Extrinsic Value,Volume,Open Interest"];
+    const headers = "Timestamp,Date (IST),Symbol,Spot Price,Strike,Option Type,Moneyness,Open,High,Low,Close,Change,Range,Intrinsic Value,Extrinsic Value,Volume,Open Interest";
     const rows = processedCandles.map((c) => {
       return `${c.time},"${formatDate(c.time)}",${symbol},${spotVal},${targetStrike},${activeOptionTypeTab},"${c.moneyness}",${c.open},${c.high},${c.low},${c.close},${c.change.toFixed(2)},${c.range.toFixed(2)},${c.intrinsic.toFixed(2)},${c.extrinsic.toFixed(2)},${c.volume},${c.oi || 0}`;
     });

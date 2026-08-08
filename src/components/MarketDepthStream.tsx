@@ -16,15 +16,15 @@ interface MarketDepthProps {
 
 export const MarketDepthStream: React.FC<MarketDepthProps> = ({ bids = [], asks = [], symbol }) => {
   // Calculate Totals & Max Quantities for Depth Bar percentage
-  const totalBidQty = bids.reduce((sum, b) => sum + (b.quantity || 0), 0);
-  const totalAskQty = asks.reduce((sum, a) => sum + (a.quantity || 0), 0);
+  const totalBidQty = bids.reduce((sum, b) => sum + (b.quantity ?? (b as any).qty ?? 0), 0);
+  const totalAskQty = asks.reduce((sum, a) => sum + (a.quantity ?? (a as any).qty ?? 0), 0);
   const totalQty = totalBidQty + totalAskQty || 1;
 
   const bidQtyPct = Math.round((totalBidQty / totalQty) * 100);
   const askQtyPct = 100 - bidQtyPct;
 
-  const maxBidQty = Math.max(...bids.map((b) => b.quantity), 1);
-  const maxAskQty = Math.max(...asks.map((a) => a.quantity), 1);
+  const maxBidQty = Math.max(...bids.map((b) => b.quantity ?? (b as any).qty ?? 0), 1);
+  const maxAskQty = Math.max(...asks.map((a) => a.quantity ?? (a as any).qty ?? 0), 1);
 
   const bestBid = bids[0]?.price || 0;
   const bestAsk = asks[0]?.price || 0;

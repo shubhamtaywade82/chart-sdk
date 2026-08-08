@@ -182,7 +182,7 @@ export function detectOrderBlocks(candles: CandleData[], minImpulseMult = 1.5): 
       });
     }
 
-    const bearImpulse = (prevCandle.open - next1.close) + (next1.open - next2.close);
+    const bearImpulse = (next1.open - next1.close) + (next2.open - next2.close);
     if (isBullishPrev && bearImpulse > avgRange * minImpulseMult) {
       const top = prevCandle.high;
       const bottom = prevCandle.low;

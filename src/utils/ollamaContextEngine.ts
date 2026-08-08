@@ -127,6 +127,7 @@ export class OllamaContextEngine {
    * models like qwen3.5 put reasoning there and may leave content empty).
    */
   private extractJsonObject(text: string): Record<string, unknown> | null {
+    if (!text || typeof text !== "string") return null;
     const candidates = [text, text.replace(/```(?:json)?\s*([\s\S]*?)```/g, "$1")];
     for (const raw of candidates) {
       const clean = raw.trim();
