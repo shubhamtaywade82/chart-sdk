@@ -37,7 +37,7 @@ export class BinanceAdapter implements IDataAdapter {
   }
 
   async fetchCandles(symbol: string, interval: string, _limit = 500): Promise<Candle[]> {
-    const res = await fetch(`/api/binance/charts/intraday?symbol=${symbol}&interval=${interval}m`);
+    const res = await fetch(`/api/binance/charts/intraday?symbol=${encodeURIComponent(symbol)}&interval=${encodeURIComponent(interval)}`);
     const json = await res.json();
     return Array.isArray(json?.candles) ? json.candles : [];
   }
@@ -48,7 +48,7 @@ export class BinanceAdapter implements IDataAdapter {
     const from = new Date(fromTs * 1000).toISOString();
     const to   = new Date(toTs * 1000).toISOString();
     const res  = await fetch(
-      `/api/binance/charts/historical?symbol=${symbol}&interval=${interval}m&fromDate=${from}&toDate=${to}`
+      `/api/binance/charts/historical?symbol=${encodeURIComponent(symbol)}&interval=${encodeURIComponent(interval)}&fromDate=${from}&toDate=${to}`
     );
     const json = await res.json();
     return Array.isArray(json?.candles) ? json.candles : [];
@@ -63,7 +63,7 @@ export class BinanceAdapter implements IDataAdapter {
     // Close any existing connection
     this.wsRef?.close();
 
-    const ws = new WebSocket(`/ws/binance?symbol=${symbol}&interval=${interval}m`);
+    const ws = new WebSocket(`/ws/binance?symbol=${encodeURIComponent(symbol)}&interval=${encodeURIComponent(interval)}`);
     this.wsRef = ws;
 
     ws.onmessage = (e) => {

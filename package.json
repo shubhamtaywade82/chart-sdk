@@ -4,8 +4,10 @@
   "version": "1.0.0",
   "type": "module",
   "scripts": {
-    "dev:binance":  "VITE_APP=binance  vite --port 5200",
-    "dev:dhanhq":   "VITE_APP=dhanhq   vite --port 5201",
+    "dev:binance":  "tsx server/binance/index.ts & VITE_APP=binance vite --port 5200",
+    "dev:dhanhq":   "tsx server/dhanhq/index.ts & VITE_APP=dhanhq vite --port 5201",
+    "dev:frontend:binance": "VITE_APP=binance vite --port 5200",
+    "dev:frontend:dhanhq":  "VITE_APP=dhanhq vite --port 5201",
     "backend:binance": "tsx server/binance/index.ts",
     "backend:dhanhq":  "tsx server/dhanhq/index.ts",
     "start:binance": "tsx server/binance/index.ts & VITE_APP=binance vite --port 5200",
