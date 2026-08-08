@@ -1,0 +1,41 @@
+{
+  "name": "chart-sdk",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev:binance":  "VITE_APP=binance  vite --port 5200",
+    "dev:dhanhq":   "VITE_APP=dhanhq   vite --port 5201",
+    "backend:binance": "tsx server/binance/index.ts",
+    "backend:dhanhq":  "tsx server/dhanhq/index.ts",
+    "start:binance": "tsx server/binance/index.ts & VITE_APP=binance vite --port 5200",
+    "start:dhanhq":  "tsx server/dhanhq/index.ts & VITE_APP=dhanhq  vite --port 5201",
+    "build:binance": "VITE_APP=binance tsc && vite build --outDir dist/binance",
+    "build:dhanhq":  "VITE_APP=dhanhq  tsc && vite build --outDir dist/dhanhq",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "axios": "^1.13.6",
+    "cors": "^2.8.5",
+    "dotenv": "^17.3.1",
+    "express": "^4.21.2",
+    "lightweight-charts": "^5.0.3",
+    "lucide-react": "^0.477.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "react-router-dom": "^7.1.5",
+    "ws": "^8.19.0"
+  },
+  "devDependencies": {
+    "@types/cors": "^2.8.17",
+    "@types/express": "^4.17.21",
+    "@types/node": "^22.13.1",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "@types/ws": "^8.18.0",
+    "@vitejs/plugin-react": "^4.3.4",
+    "tsx": "^4.23.1",
+    "typescript": "^5.9.3",
+    "vite": "^6.2.0"
+  }
+}
