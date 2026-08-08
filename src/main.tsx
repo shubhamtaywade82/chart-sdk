@@ -9,6 +9,9 @@ declare const __VITE_APP__: string;
 async function bootstrap() {
   const appId = typeof __VITE_APP__ !== "undefined" ? __VITE_APP__ : "binance";
 
+  // Set document title per app so DhanHQ tab doesn't show Binance branding
+  document.title = appId === "dhanhq" ? "DhanHQ Pro Trading Terminal" : "Binance Charts Pro Trading Terminal";
+
   let AppComponent: React.ComponentType;
 
   if (appId === "dhanhq") {
@@ -28,4 +31,10 @@ async function bootstrap() {
   );
 }
 
-bootstrap();
+bootstrap().catch((err) => {
+  console.error("[chart-sdk] Bootstrap failed:", err);
+  const root = document.getElementById("root");
+  if (root) {
+    root.innerHTML = `<div style="color:#ff4d4f;padding:40px;font-family:monospace">Failed to load application: ${err?.message ?? err}</div>`;
+  }
+});

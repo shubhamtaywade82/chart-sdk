@@ -44,8 +44,10 @@ interface SessionInfo {
 }
 
 export function App() {
-  const [activeTab, setActiveTab] = useState<"terminal" | "ai_supertrend" | "backtest" | "intel" | "bias" | "portfolio">((): any => {
-    return (localStorage.getItem("binance_activeTab") as any) || "terminal";
+  const VALID_TABS = ["terminal", "ai_supertrend", "backtest", "intel", "bias", "portfolio"] as const;
+  const [activeTab, setActiveTab] = useState<"terminal" | "ai_supertrend" | "backtest" | "intel" | "bias" | "portfolio">(() => {
+    const saved = localStorage.getItem("binance_activeTab");
+    return (VALID_TABS.includes(saved as any) ? saved : "terminal") as any;
   });
   const [selectedSymbol, setSelectedSymbol] = useState(() => {
     return localStorage.getItem("binance_selectedSymbol") || "btcusdt";
@@ -134,11 +136,8 @@ export function App() {
   const [session, setSession] = useState<SessionInfo | null>(null);
   const wsRef = React.useRef<WebSocket | null>(null);
 
-  useEffect(() => {
-    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-      wsRef.current.send(JSON.stringify({ type: "subscribe", symbol: selectedSymbol }));
-    }
-  }, [selectedSymbol]);
+  // Symbol subscription is handled inside the main WebSocket useEffect below
+  // (sending a new subscribe message on reconnect is sufficient)
 
   // Data states
   const [funds, setFunds] = useState<any>(null);
@@ -234,28 +233,29 @@ export function App() {
   const fetchPortfolioAndLedger = async () => {
     setLoading(true);
     try {
-      const fRes = await fetch("/api/funds");
-      const fJson = await fRes.json();
+      const [fRes, pRes, oRes, lRes, tcRes] = await Promise.all([
+        fetch("/api/funds"),
+        fetch("/api/positions"),
+        fetch("/api/orders"),
+        fetch("/api/ledger"),
+        fetch("/api/trader-controls"),
+      ]);
+      const [fJson, pJson, oJson, lJson, tcJson] = await Promise.all([
+        fRes.json(),
+        pRes.json(),
+        oRes.json(),
+        lRes.json(),
+        tcRes.json(),
+      ]);
       if (fJson.data) setFunds(fJson.data);
-
-      const pRes = await fetch("/api/positions");
-      const pJson = await pRes.json();
       if (pJson.data) setPositions(Array.isArray(pJson.data) ? pJson.data : []);
-
-      const oRes = await fetch("/api/orders");
-      const oJson = await oRes.json();
       if (oJson.data) setOrders(Array.isArray(oJson.data) ? oJson.data : []);
-
-      const lRes = await fetch("/api/ledger");
-      const lJson = await lRes.json();
       if (lJson.data) setLedger(lJson.data);
-
-      const tcRes = await fetch("/api/trader-controls");
-      const tcJson = await tcRes.json();
       if (tcJson.killSwitch) {
         setKillSwitchActive(tcJson.killSwitch.killSwitchStatus === "ACTIVATED");
       }
     } catch (e) {
+      console.error("Portfolio fetch error:", e);
     } finally {
       setLoading(false);
     }

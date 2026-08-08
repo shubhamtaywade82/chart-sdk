@@ -11,9 +11,9 @@
     "backend:binance": "tsx server/binance/index.ts",
     "backend:dhanhq":  "tsx server/dhanhq/index.ts",
     "start:binance": "tsx server/binance/index.ts & VITE_APP=binance vite --port 5200",
-    "start:dhanhq":  "tsx server/dhanhq/index.ts & VITE_APP=dhanhq  vite --port 5201",
-    "build:binance": "VITE_APP=binance tsc && vite build --outDir dist/binance",
-    "build:dhanhq":  "VITE_APP=dhanhq  tsc && vite build --outDir dist/dhanhq",
+    "start:dhanhq":  "tsx server/dhanhq/index.ts & VITE_APP=dhanhq vite --port 5201",
+    "build:binance": "VITE_APP=binance tsc && VITE_APP=binance vite build --outDir dist/binance",
+    "build:dhanhq":  "VITE_APP=dhanhq tsc && VITE_APP=dhanhq vite build --outDir dist/dhanhq",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

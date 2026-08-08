@@ -66,8 +66,10 @@ const SYMBOL_ID_MAP: Record<string, { id: string; segment: string; instrument: s
 };
 
 export function App() {
+  const VALID_TABS = ["terminal", "ai_supertrend", "options", "expired", "optdesk", "bias", "portfolio"] as const;
   const [activeTab, setActiveTab] = useState<"terminal" | "ai_supertrend" | "options" | "expired" | "optdesk" | "bias" | "portfolio">(() => {
-    return (localStorage.getItem("dhan_activeTab") as any) || "terminal";
+    const saved = localStorage.getItem("dhan_activeTab");
+    return (VALID_TABS.includes(saved as any) ? saved : "terminal") as any;
   });
   const [selectedSymbol, setSelectedSymbol] = useState(() => {
     return localStorage.getItem("dhan_selectedSymbol") || "nifty";
@@ -204,8 +206,11 @@ export function App() {
         if (typeof rawTime === "number") {
           timeNum = rawTime > 1e11 ? Math.floor(rawTime / 1000) : rawTime;
         } else if (typeof rawTime === "string") {
-          const parsed = Date.parse(rawTime);
-          timeNum = !isNaN(parsed) ? Math.floor(parsed / 1000) : Math.floor(Date.now() / 1000);
+          // Date.parse fails for time-only strings like "15:30:00" — use index-based offset instead
+          const parsed = /^\d{4}-/.test(rawTime) ? Date.parse(rawTime) : NaN;
+          timeNum = !isNaN(parsed)
+            ? Math.floor(parsed / 1000)
+            : Math.floor(Date.now() / 1000) - (closeArray.length - i) * (Number(expiredForm.interval) || 15) * 60;
         } else {
           timeNum = Math.floor(Date.now() / 1000) - (closeArray.length - i) * (Number(expiredForm.interval) || 15) * 60;
         }
@@ -433,7 +438,7 @@ export function App() {
       fetchBias();
     } else if (activeTab === "options") {
       fetchOptionChain();
-      timer = setInterval(fetchOptionChain, 3000);
+      timer = setInterval(() => fetchOptionChain(true), 3000);
     } else if (activeTab === "expired") {
       handleFetchExpired();
     } else if (activeTab === "portfolio") {
@@ -467,8 +472,9 @@ export function App() {
     }
   };
 
-  const fetchOptionChain = async () => {
-    setLoading(true);
+  const fetchOptionChain = async (isPolled = false) => {
+    // Only show loading spinner on first/manual fetch, not background polls
+    if (!isPolled) setLoading(true);
     setOptionError(null);
     try {
       const url = selectedExpiry
@@ -488,7 +494,7 @@ export function App() {
     } catch (e: any) {
       setOptionError(e.message);
     } finally {
-      setLoading(false);
+      if (!isPolled) setLoading(false);
     }
   };
 
@@ -902,7 +908,7 @@ export function App() {
                     </select>
                   )}
 
-                  <button onClick={fetchOptionChain} className="glass-card" style={{ padding: "6px 12px", color: "var(--accent-cyan)", fontSize: "12px", display: "flex", alignItems: "center", gap: "6px", cursor: "pointer" }}>
+                  <button onClick={() => fetchOptionChain()} className="glass-card" style={{ padding: "6px 12px", color: "var(--accent-cyan)", fontSize: "12px", display: "flex", alignItems: "center", gap: "6px", cursor: "pointer" }}>
                     <RefreshCw size={14} /> Refresh
                   </button>
                 </div>

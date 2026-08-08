@@ -34,7 +34,7 @@ export class DhanHQAdapter implements IDataAdapter {
   }
 
   async fetchCandles(symbol: string, interval: string, _limit = 500): Promise<Candle[]> {
-    const res = await fetch(`/api/dhanhq/charts/intraday?symbol=${symbol}&interval=${interval}`);
+    const res = await fetch(`/api/dhanhq/charts/intraday?symbol=${encodeURIComponent(symbol)}&interval=${encodeURIComponent(interval)}`);
     const json = await res.json();
     return Array.isArray(json?.candles) ? json.candles : [];
   }
@@ -45,7 +45,7 @@ export class DhanHQAdapter implements IDataAdapter {
     const from = new Date(fromTs * 1000).toISOString();
     const to   = new Date(toTs * 1000).toISOString();
     const res  = await fetch(
-      `/api/dhanhq/charts/historical?symbol=${symbol}&interval=${interval}&fromDate=${from}&toDate=${to}`
+      `/api/dhanhq/charts/historical?symbol=${encodeURIComponent(symbol)}&interval=${encodeURIComponent(interval)}&fromDate=${encodeURIComponent(from)}&toDate=${encodeURIComponent(to)}`
     );
     const json = await res.json();
     return Array.isArray(json?.candles) ? json.candles : [];
@@ -57,17 +57,35 @@ export class DhanHQAdapter implements IDataAdapter {
     onCandle: (c: Candle) => void,
     onTick: (t: TickPayload) => void
   ): () => void {
-    const ws = new WebSocket(`/ws/dhanhq?symbol=${symbol}&interval=${interval}`);
+    const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+    const host = window.location.host;
+    const wsUrl = `${protocol}//${host}/ws/dhanhq/feed?symbol=${encodeURIComponent(symbol)}&interval=${encodeURIComponent(interval)}`;
+    const ws = new WebSocket(wsUrl);
+
+    ws.onopen = () => {
+      try {
+        ws.send(JSON.stringify({ type: "subscribe", symbol }));
+      } catch {}
+    };
 
     ws.onmessage = (e) => {
       try {
         const msg = JSON.parse(e.data);
         if (msg.type === "candle" && msg.candle) onCandle(msg.candle);
-        if (msg.type === "tick")   onTick({ price: msg.price, bid: msg.bid ?? msg.price, ask: msg.ask ?? msg.price, spread: msg.spread ?? 0 });
+        if (msg.type === "tick") {
+          onTick({
+            price: msg.price,
+            bid: msg.bid ?? msg.price,
+            ask: msg.ask ?? msg.price,
+            spread: msg.spread ?? 0,
+          });
+        }
       } catch {}
     };
 
-    return () => ws.close();
+    return () => {
+      try { ws.close(); } catch {}
+    };
   }
 
   subscribeOrderBook(
@@ -75,22 +93,40 @@ export class DhanHQAdapter implements IDataAdapter {
     depth: number,
     onUpdate: (bids: OrderBookLevel[], asks: OrderBookLevel[]) => void
   ): () => void {
-    const ws = new WebSocket(`/ws/dhanhq/depth?symbol=${symbol}&depth=${depth}`);
-    ws.onmessage = (e) => {
+    const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+    const host = window.location.host;
+    const wsUrl = `${protocol}//${host}/ws/dhanhq/feed?symbol=${encodeURIComponent(symbol)}&depth=${depth}`;
+    const ws = new WebSocket(wsUrl);
+
+    ws.onopen = () => {
       try {
-        const { bids, asks } = JSON.parse(e.data);
-        onUpdate(bids, asks);
+        ws.send(JSON.stringify({ type: "subscribe", symbol }));
       } catch {}
     };
-    return () => ws.close();
+
+    ws.onmessage = (e) => {
+      try {
+        const msg = JSON.parse(e.data);
+        if (msg.type === "tick" && Array.isArray(msg.bids) && Array.isArray(msg.asks)) {
+          // Normalize quantity to qty for OrderBookLevel interface
+          const bids = msg.bids.map((b: any) => ({ price: b.price, qty: b.qty ?? b.quantity ?? 0, quantity: b.quantity ?? b.qty ?? 0, orders: b.orders }));
+          const asks = msg.asks.map((a: any) => ({ price: a.price, qty: a.qty ?? a.quantity ?? 0, quantity: a.quantity ?? a.qty ?? 0, orders: a.orders }));
+          onUpdate(bids, asks);
+        }
+      } catch {}
+    };
+    return () => {
+      try { ws.close(); } catch {}
+    };
   }
 
   async fetchFunds(): Promise<FundsSnapshot> {
     const res  = await fetch("/api/dhanhq/funds");
     const json = await res.json();
+    const balance = json?.data?.availableBalance ?? json?.data?.availabelBalance ?? 0;
     return {
-      equity:          json?.data?.availabelBalance ?? 0,
-      availableMargin: json?.data?.availabelBalance ?? 0,
+      equity:          balance,
+      availableMargin: balance,
       usedMargin:      json?.data?.utilizedAmount   ?? 0,
       currency:        "₹",
     };

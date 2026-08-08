@@ -170,23 +170,26 @@ export function markPaperPosition(
   return { acc: { ...acc, open: updated }, trade: null };
 }
 
-export function loadPaperAccount(symbol: string): PaperAccount | null {
+export function loadPaperAccount(symbol: string, prefix = "paper_"): PaperAccount | null {
   try {
-    const raw = localStorage.getItem(`binance_paper_${symbol.toLowerCase()}`);
+    const key = `${prefix}${symbol.toLowerCase()}`;
+    const legacyKey = `binance_paper_${symbol.toLowerCase()}`;
+    const raw = localStorage.getItem(key) || localStorage.getItem(legacyKey);
     return raw ? (JSON.parse(raw) as PaperAccount) : null;
   } catch {
     return null;
   }
 }
 
-export function savePaperAccount(acc: PaperAccount): void {
+export function savePaperAccount(acc: PaperAccount, prefix = "paper_"): void {
   try {
-    localStorage.setItem(`binance_paper_${acc.symbol.toLowerCase()}`, JSON.stringify(acc));
+    localStorage.setItem(`${prefix}${acc.symbol.toLowerCase()}`, JSON.stringify(acc));
   } catch {}
 }
 
-export function resetPaperAccount(symbol: string): PaperAccount {
+export function resetPaperAccount(symbol: string, prefix = "paper_"): PaperAccount {
   try {
+    localStorage.removeItem(`${prefix}${symbol.toLowerCase()}`);
     localStorage.removeItem(`binance_paper_${symbol.toLowerCase()}`);
   } catch {}
   return createPaperAccount(symbol);

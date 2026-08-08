@@ -31,8 +31,8 @@ export class BinanceAdapter implements IDataAdapter {
       { key: "15",  label: "15m" },
       { key: "30",  label: "30m" },
       { key: "60",  label: "1h"  },
-      { key: "240", label: "4h"  },
-      { key: "D",   label: "1D"  },
+      { key: "4h",  label: "4h"  },
+      { key: "1d",  label: "1D"  },
     ];
   }
 
@@ -61,9 +61,15 @@ export class BinanceAdapter implements IDataAdapter {
     onTick: (t: TickPayload) => void
   ): () => void {
     // Close any existing connection
-    this.wsRef?.close();
+    if (this.wsRef) {
+      try { this.wsRef.close(); } catch {}
+      this.wsRef = null;
+    }
 
-    const ws = new WebSocket(`/ws/binance/feed?symbol=${encodeURIComponent(symbol)}&interval=${encodeURIComponent(interval)}`);
+    const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+    const host = window.location.host;
+    const wsUrl = `${protocol}//${host}/ws/binance/feed?symbol=${encodeURIComponent(symbol)}&interval=${encodeURIComponent(interval)}`;
+    const ws = new WebSocket(wsUrl);
     this.wsRef = ws;
 
     ws.onopen = () => {
@@ -91,7 +97,12 @@ export class BinanceAdapter implements IDataAdapter {
       } catch {}
     };
 
-    return () => { ws.close(); this.wsRef = null; };
+    return () => {
+      try { ws.close(); } catch {}
+      if (this.wsRef === ws) {
+        this.wsRef = null;
+      }
+    };
   }
 
   subscribeOrderBook(
@@ -100,8 +111,11 @@ export class BinanceAdapter implements IDataAdapter {
     onUpdate: (bids: OrderBookLevel[], asks: OrderBookLevel[]) => void
   ): () => void {
     // The server embeds bids/asks in every tick message on the main feed socket.
-    // There is no separate /ws/binance/depth endpoint — read from the main path.
-    const ws = new WebSocket(`/ws/binance/feed?symbol=${encodeURIComponent(symbol)}&interval=1`);
+    const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+    const host = window.location.host;
+    const wsUrl = `${protocol}//${host}/ws/binance/feed?symbol=${encodeURIComponent(symbol)}&interval=1`;
+    const ws = new WebSocket(wsUrl);
+
     ws.onopen = () => {
       try {
         ws.send(JSON.stringify({ type: "subscribe", symbol }));
@@ -111,11 +125,15 @@ export class BinanceAdapter implements IDataAdapter {
       try {
         const msg = JSON.parse(e.data);
         if (msg.type === "tick" && Array.isArray(msg.bids) && Array.isArray(msg.asks)) {
-          onUpdate(msg.bids, msg.asks);
+          const bids = msg.bids.map((b: any) => ({ price: b.price, qty: b.qty ?? b.quantity ?? 0, quantity: b.quantity ?? b.qty ?? 0, orders: b.orders }));
+          const asks = msg.asks.map((a: any) => ({ price: a.price, qty: a.qty ?? a.quantity ?? 0, quantity: a.quantity ?? a.qty ?? 0, orders: a.orders }));
+          onUpdate(bids, asks);
         }
       } catch {}
     };
-    return () => ws.close();
+    return () => {
+      try { ws.close(); } catch {}
+    };
   }
 
   async fetchFunds(): Promise<FundsSnapshot> {
