@@ -32,6 +32,8 @@ import { MarketDepthStream } from "../../components/MarketDepthStream";
 import { ExpiredOptionsTable } from "../../components/ExpiredOptionsTable";
 import { OptionsResearchWorkbench } from "../../components/research_dhanhq/OptionsResearchWorkbench";
 import { OptDeskExpiryArchivePage } from "../../components/OptDeskExpiryArchivePage";
+import { AdaptiveSupertrendWorkbench } from "../../components/research/AdaptiveSupertrendWorkbench";
+import { Brain } from "lucide-react";
 
 interface TickData {
   symbol: string;
@@ -64,7 +66,7 @@ const SYMBOL_ID_MAP: Record<string, { id: string; segment: string; instrument: s
 };
 
 export function App() {
-  const [activeTab, setActiveTab] = useState<"terminal" | "options" | "expired" | "optdesk" | "bias" | "portfolio">(() => {
+  const [activeTab, setActiveTab] = useState<"terminal" | "ai_supertrend" | "options" | "expired" | "optdesk" | "bias" | "portfolio">(() => {
     return (localStorage.getItem("dhan_activeTab") as any) || "terminal";
   });
   const [selectedSymbol, setSelectedSymbol] = useState(() => {
@@ -573,74 +575,144 @@ export function App() {
 
   return (
     <div style={{ minHeight: "100vh", display: "flex", flexDirection: "column", background: "var(--bg-primary)" }}>
-      {/* 1. Header Bar */}
-      <header className="glass-panel" style={{ borderRadius: 0, padding: "10px 20px", display: "flex", alignItems: "center", justifyContent: "space-between", borderBottom: "1px solid var(--border-color)", zIndex: 20 }}>
-        <div style={{ display: "flex", alignItems: "center", gap: "16px" }}>
-          {/* Left Sidebar Toggle Button */}
+      {/* 1. Sleek Compact Header Bar (Fixed Height, No Wrapping) */}
+      <header
+        className="glass-panel"
+        style={{
+          borderRadius: 0,
+          padding: "0 14px",
+          height: "46px",
+          minHeight: "46px",
+          maxHeight: "46px",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          borderBottom: "1px solid var(--border-color)",
+          whiteSpace: "nowrap",
+          overflowX: "auto",
+          overflowY: "hidden",
+          scrollbarWidth: "none",
+          zIndex: 20,
+          gap: "12px",
+        }}
+      >
+        {/* Left: Brand & Symbol Selector */}
+        <div style={{ display: "flex", alignItems: "center", gap: "10px", flexShrink: 0 }}>
+          {/* Left Sidebar Toggle */}
           <button
             onClick={() => setShowLeftSidebar(!showLeftSidebar)}
             className="glass-card"
             title="Toggle Navigation Sidebar"
-            style={{ padding: "6px", color: "var(--accent-cyan)", cursor: "pointer", display: "flex", alignItems: "center" }}
+            style={{ padding: "5px 7px", color: "var(--accent-cyan)", cursor: "pointer", display: "flex", alignItems: "center", borderRadius: "5px" }}
           >
-            {showLeftSidebar ? <PanelLeftClose size={18} /> : <PanelLeftOpen size={18} />}
+            {showLeftSidebar ? <PanelLeftClose size={15} /> : <PanelLeftOpen size={15} />}
           </button>
 
-          <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
-            <div style={{ width: "32px", height: "32px", borderRadius: "8px", background: "linear-gradient(135deg, #00F5A0 0%, #00E5FF 100%)", display: "flex", alignItems: "center", justifyContent: "center", color: "#0A0D14" }}>
-              <Zap size={20} strokeWidth={2.5} />
+          {/* Compact Brand Badge */}
+          <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+            <div style={{ width: "24px", height: "24px", borderRadius: "6px", background: "linear-gradient(135deg, #00F5A0 0%, #00E5FF 100%)", display: "flex", alignItems: "center", justifyContent: "center", color: "#0A0D14" }}>
+              <Zap size={14} strokeWidth={3} />
             </div>
-            <div>
-              <div style={{ fontSize: "16px", fontWeight: 700, letterSpacing: "-0.5px" }}>DhanHQ Pro Terminal</div>
-              <div style={{ fontSize: "10px", color: "var(--text-muted)", fontFamily: "var(--font-mono)" }}>
-                @shubhamtaywade82/dhanhq-ts <span style={{ color: "var(--accent-green)" }}>v0.3.0</span>
-              </div>
+            <div style={{ fontSize: "13px", fontWeight: 800, letterSpacing: "-0.3px", color: "#FFFFFF" }}>
+              DhanHQ<span style={{ color: "#00F5A0" }}>Pro</span>
             </div>
           </div>
 
-          {/* Symbol Selector */}
-          <div style={{ display: "flex", background: "rgba(255,255,255,0.05)", borderRadius: "8px", padding: "3px" }}>
-            {["nifty", "banknifty", "sensex", "reliance", "hdfcbank", "tcs"].map((sym) => (
+          {/* Compact Symbol Selector Pills */}
+          <div style={{ display: "flex", background: "rgba(255,255,255,0.05)", borderRadius: "6px", padding: "2px", gap: "2px" }}>
+            {[
+              { key: "nifty", label: "NIFTY" },
+              { key: "banknifty", label: "BANKNIFTY" },
+              { key: "sensex", label: "SENSEX" },
+              { key: "reliance", label: "RELIANCE" },
+              { key: "hdfcbank", label: "HDFCBANK" },
+              { key: "tcs", label: "TCS" },
+            ].map((sym) => (
               <button
-                key={sym}
+                key={sym.key}
                 onClick={() => {
-                  setSelectedSymbol(sym);
+                  setSelectedSymbol(sym.key);
                   setSelectedExpiry("");
                 }}
                 style={{
-                  background: selectedSymbol === sym ? "var(--bg-card)" : "transparent",
-                  color: selectedSymbol === sym ? "var(--accent-cyan)" : "var(--text-secondary)",
-                  border: selectedSymbol === sym ? "1px solid var(--border-hover)" : "none",
-                  borderRadius: "5px",
-                  padding: "5px 10px",
+                  background: selectedSymbol === sym.key ? "var(--bg-card)" : "transparent",
+                  color: selectedSymbol === sym.key ? "var(--accent-cyan)" : "var(--text-secondary)",
+                  border: selectedSymbol === sym.key ? "1px solid var(--border-hover)" : "1px solid transparent",
+                  borderRadius: "4px",
+                  padding: "3px 8px",
                   fontSize: "11px",
-                  fontWeight: 600,
+                  fontWeight: 700,
                   cursor: "pointer",
-                  textTransform: "uppercase",
                 }}
               >
-                {sym}
+                {sym.label}
               </button>
             ))}
           </div>
         </div>
 
-        {/* Right Status Controls */}
-        <div style={{ display: "flex", alignItems: "center", gap: "14px" }}>
+        {/* Right: Status Controls & Actions */}
+        <div style={{ display: "flex", alignItems: "center", gap: "8px", flexShrink: 0 }}>
           {/* Session Badge */}
-          <div style={{ padding: "5px 10px", borderRadius: "20px", fontSize: "11px", fontWeight: 700, display: "flex", alignItems: "center", gap: "6px" }} className={badge.class}>
-            <Clock size={13} />
+          <div
+            style={{
+              padding: "3px 8px",
+              borderRadius: "12px",
+              fontSize: "10.5px",
+              fontWeight: 700,
+              display: "flex",
+              alignItems: "center",
+              gap: "5px",
+            }}
+            className={badge.class}
+          >
+            <Clock size={12} />
             <span>{badge.text}</span>
-            <span style={{ fontSize: "10px", opacity: 0.8 }} className="mono">
+            <span style={{ opacity: 0.8 }} className="mono">
               ({session?.istTime || "14:57 IST"})
             </span>
           </div>
 
-          {/* WebSocket Badge */}
-          <div style={{ display: "flex", alignItems: "center", gap: "6px", fontSize: "11px", color: wsConnected ? "var(--accent-green)" : "var(--accent-red)" }}>
-            <span style={{ width: "8px", height: "8px", borderRadius: "50%", backgroundColor: wsConnected ? "var(--accent-green)" : "var(--accent-red)", boxShadow: wsConnected ? "0 0 10px #00F5A0" : "none" }} />
-            <span className="mono">{wsConnected ? "STREAMING" : "OFFLINE"}</span>
+          {/* Streaming Status Pill */}
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: "5px",
+              fontSize: "10px",
+              fontWeight: 700,
+              padding: "3px 8px",
+              borderRadius: "12px",
+              background: wsConnected ? "rgba(0, 245, 160, 0.12)" : "rgba(255, 73, 92, 0.12)",
+              color: wsConnected ? "#00F5A0" : "#FF495C",
+              border: `1px solid ${wsConnected ? "rgba(0, 245, 160, 0.3)" : "rgba(255, 73, 92, 0.3)"}`,
+            }}
+          >
+            <span style={{ width: "6px", height: "6px", borderRadius: "50%", backgroundColor: wsConnected ? "#00F5A0" : "#FF495C" }} />
+            <span>{wsConnected ? "LIVE NSE" : "OFFLINE"}</span>
           </div>
+
+          {/* AI Results Dashboard Button */}
+          <button
+            onClick={() => setActiveTab(activeTab === "ai_supertrend" ? "terminal" : "ai_supertrend")}
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: "5px",
+              padding: "4px 10px",
+              borderRadius: "5px",
+              color: activeTab === "ai_supertrend" ? "#00F5A0" : "#FFD700",
+              border: activeTab === "ai_supertrend" ? "1px solid #00F5A0" : "1px solid rgba(255, 215, 0, 0.35)",
+              background: activeTab === "ai_supertrend" ? "rgba(0, 245, 160, 0.2)" : "rgba(255, 215, 0, 0.1)",
+              fontSize: "10.5px",
+              fontWeight: 800,
+              cursor: "pointer",
+              transition: "all 0.15s ease",
+            }}
+          >
+            <Brain size={12} />
+            <span>{activeTab === "ai_supertrend" ? "CHART VIEW" : "AI WORKBENCH"}</span>
+          </button>
 
           {/* 20-Depth Toggle Button */}
           <button
@@ -649,38 +721,38 @@ export function App() {
             style={{
               display: "flex",
               alignItems: "center",
-              gap: "6px",
-              padding: "6px 12px",
-              borderRadius: "6px",
+              gap: "4px",
+              padding: "4px 8px",
+              borderRadius: "5px",
               color: showDepthPanel ? "var(--accent-green)" : "var(--text-secondary)",
-              fontSize: "11px",
+              fontSize: "10.5px",
               fontWeight: 600,
               cursor: "pointer",
             }}
           >
-            {showDepthPanel ? <PanelRightClose size={16} /> : <PanelRightOpen size={16} />}
-            <span>20-DEPTH PANEL</span>
+            {showDepthPanel ? <PanelRightClose size={14} /> : <PanelRightOpen size={14} />}
+            <span>DEPTH</span>
           </button>
 
-          {/* Kill Switch Toggle Button */}
+          {/* Trader Controls / Kill Switch */}
           <button
             onClick={toggleKillSwitch}
             style={{
               display: "flex",
               alignItems: "center",
-              gap: "6px",
-              padding: "6px 12px",
-              borderRadius: "6px",
+              gap: "4px",
+              padding: "4px 8px",
+              borderRadius: "5px",
               background: killSwitchActive ? "rgba(255,73,92,0.2)" : "rgba(255,255,255,0.05)",
               border: killSwitchActive ? "1px solid var(--accent-red)" : "1px solid var(--border-color)",
               color: killSwitchActive ? "var(--accent-red)" : "var(--text-secondary)",
-              fontSize: "11px",
+              fontSize: "10.5px",
               fontWeight: 600,
               cursor: "pointer",
             }}
           >
-            <Lock size={14} />
-            <span>{killSwitchActive ? "KILL ACTIVE" : "TRADER CONTROLS"}</span>
+            <Lock size={12} />
+            <span>{killSwitchActive ? "LOCKED" : "CONTROLS"}</span>
           </button>
         </div>
       </header>
@@ -710,6 +782,7 @@ export function App() {
 
             {[
               { id: "terminal", label: "Real-Time Terminal", icon: BarChart2 },
+              { id: "ai_supertrend", label: "AI Supertrend & Ollama", icon: Brain },
               { id: "options", label: "Option Chain & Greeks", icon: Layers },
               { id: "expired", label: "Expired Research Workbench", icon: Database },
               { id: "optdesk", label: "OPTDESK Expiry Archive", icon: Database },
@@ -793,7 +866,17 @@ export function App() {
             </div>
           )}
 
-          {/* TAB 2: OPTION CHAIN & GREEKS */}
+          {/* TAB 2: ADAPTIVE SUPERTREND & LOCAL OLLAMA WORKBENCH */}
+          {activeTab === "ai_supertrend" && (
+            <AdaptiveSupertrendWorkbench
+              adapter={adapterInstance}
+              selectedSymbol={selectedSymbol}
+              selectedInterval={selectedInterval}
+              livePrice={tick?.ltp}
+            />
+          )}
+
+          {/* TAB 3: OPTION CHAIN & GREEKS */}
           {activeTab === "options" && (
             <div className="glass-panel" style={{ padding: "20px", display: "flex", flexDirection: "column", gap: "16px" }}>
               <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>

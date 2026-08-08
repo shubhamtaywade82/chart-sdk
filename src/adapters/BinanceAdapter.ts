@@ -79,14 +79,18 @@ export class BinanceAdapter implements IDataAdapter {
 
   subscribeOrderBook(
     symbol: string,
-    depth: number,
+    _depth: number,
     onUpdate: (bids: OrderBookLevel[], asks: OrderBookLevel[]) => void
   ): () => void {
-    const ws = new WebSocket(`/ws/binance/depth?symbol=${symbol}&depth=${depth}`);
+    // The server embeds bids/asks in every tick message on the main feed socket.
+    // There is no separate /ws/binance/depth endpoint — read from the main path.
+    const ws = new WebSocket(`/ws/binance?symbol=${encodeURIComponent(symbol)}&interval=1`);
     ws.onmessage = (e) => {
       try {
-        const { bids, asks } = JSON.parse(e.data);
-        onUpdate(bids, asks);
+        const msg = JSON.parse(e.data);
+        if (msg.type === "tick" && Array.isArray(msg.bids) && Array.isArray(msg.asks)) {
+          onUpdate(msg.bids, msg.asks);
+        }
       } catch {}
     };
     return () => ws.close();

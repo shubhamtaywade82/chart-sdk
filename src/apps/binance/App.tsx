@@ -16,11 +16,13 @@ import {
   TrendingUp,
   Wallet,
   Zap,
+  Brain,
 } from "lucide-react";
 import { TradingViewChart, formatPriceDynamic, getPricePrecision } from "../../components/TradingViewChart";
 import { MarketDepthStream } from "../../components/MarketDepthStream";
 import { FuturesBacktestWorkbench } from "../../components/research/FuturesBacktestWorkbench";
 import { PositioningAnalyticsView } from "../../components/research/PositioningAnalyticsView";
+import { AdaptiveSupertrendWorkbench } from "../../components/research/AdaptiveSupertrendWorkbench";
 
 interface TickData {
   symbol: string;
@@ -42,7 +44,7 @@ interface SessionInfo {
 }
 
 export function App() {
-  const [activeTab, setActiveTab] = useState<"terminal" | "backtest" | "intel" | "bias" | "portfolio">((): any => {
+  const [activeTab, setActiveTab] = useState<"terminal" | "ai_supertrend" | "backtest" | "intel" | "bias" | "portfolio">((): any => {
     return (localStorage.getItem("binance_activeTab") as any) || "terminal";
   });
   const [selectedSymbol, setSelectedSymbol] = useState(() => {
@@ -361,127 +363,164 @@ export function App() {
 
   return (
     <div style={{ minHeight: "100vh", display: "flex", flexDirection: "column", background: "var(--bg-primary)" }}>
-      {/* 1. Header Bar */}
-      <header className="glass-panel" style={{ borderRadius: 0, padding: "10px 20px", display: "flex", alignItems: "center", justifyContent: "space-between", borderBottom: "1px solid var(--border-color)", zIndex: 20 }}>
-        <div style={{ display: "flex", alignItems: "center", gap: "16px" }}>
-          {/* Left Sidebar Toggle Button */}
+      {/* 1. Sleek Compact Header Bar (Fixed Height, No Wrapping) */}
+      <header
+        className="glass-panel"
+        style={{
+          borderRadius: 0,
+          padding: "0 14px",
+          height: "46px",
+          minHeight: "46px",
+          maxHeight: "46px",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          borderBottom: "1px solid var(--border-color)",
+          whiteSpace: "nowrap",
+          overflowX: "auto",
+          overflowY: "hidden",
+          scrollbarWidth: "none",
+          zIndex: 20,
+          gap: "12px",
+        }}
+      >
+        {/* Left: Brand & Symbol Selector */}
+        <div style={{ display: "flex", alignItems: "center", gap: "10px", flexShrink: 0 }}>
+          {/* Left Sidebar Toggle */}
           <button
             onClick={() => setShowLeftSidebar(!showLeftSidebar)}
             className="glass-card"
             title="Toggle Navigation Sidebar"
-            style={{ padding: "6px", color: "var(--accent-cyan)", cursor: "pointer", display: "flex", alignItems: "center" }}
+            style={{ padding: "5px 7px", color: "var(--accent-cyan)", cursor: "pointer", display: "flex", alignItems: "center", borderRadius: "5px" }}
           >
-            {showLeftSidebar ? <PanelLeftClose size={18} /> : <PanelLeftOpen size={18} />}
+            {showLeftSidebar ? <PanelLeftClose size={15} /> : <PanelLeftOpen size={15} />}
           </button>
 
-          <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
-            <div style={{ width: "32px", height: "32px", borderRadius: "8px", background: "linear-gradient(135deg, #00F5A0 0%, #00E5FF 100%)", display: "flex", alignItems: "center", justifyContent: "center", color: "#0A0D14" }}>
-              <Zap size={20} strokeWidth={2.5} />
+          {/* Compact Brand Badge */}
+          <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+            <div style={{ width: "24px", height: "24px", borderRadius: "6px", background: "linear-gradient(135deg, #00F5A0 0%, #00E5FF 100%)", display: "flex", alignItems: "center", justifyContent: "center", color: "#0A0D14" }}>
+              <Zap size={14} strokeWidth={3} />
             </div>
-            <div>
-              <div style={{ fontSize: "16px", fontWeight: 700, letterSpacing: "-0.5px" }}>Binance Charts Pro Terminal</div>
-              <div style={{ fontSize: "10px", color: "var(--text-muted)", fontFamily: "var(--font-mono)" }}>
-                binance-client-ts <span style={{ color: "var(--accent-green)" }}>v2.1.0</span>
-              </div>
+            <div style={{ fontSize: "13px", fontWeight: 800, letterSpacing: "-0.3px", color: "#FFFFFF" }}>
+              Binance<span style={{ color: "#00F5A0" }}>Pro</span>
             </div>
           </div>
 
-          {/* Symbol Selector */}
-          <div style={{ display: "flex", background: "rgba(255,255,255,0.05)", borderRadius: "8px", padding: "3px" }}>
-            {["btcusdt", "ethusdt", "solusdt", "bnbusdt", "xrpusdt", "dogeusdt"].map((sym) => (
+          {/* Compact Symbol Selector Pills */}
+          <div style={{ display: "flex", background: "rgba(255,255,255,0.05)", borderRadius: "6px", padding: "2px", gap: "2px" }}>
+            {[
+              { key: "btcusdt", label: "BTC" },
+              { key: "ethusdt", label: "ETH" },
+              { key: "solusdt", label: "SOL" },
+              { key: "bnbusdt", label: "BNB" },
+              { key: "xrpusdt", label: "XRP" },
+              { key: "dogeusdt", label: "DOGE" },
+            ].map((sym) => (
               <button
-                key={sym}
-                onClick={() => setSelectedSymbol(sym)}
+                key={sym.key}
+                onClick={() => setSelectedSymbol(sym.key)}
                 style={{
-                  background: selectedSymbol === sym ? "var(--bg-card)" : "transparent",
-                  color: selectedSymbol === sym ? "var(--accent-cyan)" : "var(--text-secondary)",
-                  border: selectedSymbol === sym ? "1px solid var(--border-hover)" : "none",
-                  borderRadius: "5px",
-                  padding: "5px 10px",
+                  background: selectedSymbol === sym.key ? "var(--bg-card)" : "transparent",
+                  color: selectedSymbol === sym.key ? "var(--accent-cyan)" : "var(--text-secondary)",
+                  border: selectedSymbol === sym.key ? "1px solid var(--border-hover)" : "1px solid transparent",
+                  borderRadius: "4px",
+                  padding: "3px 8px",
                   fontSize: "11px",
-                  fontWeight: 600,
+                  fontWeight: 700,
                   cursor: "pointer",
-                  textTransform: "uppercase",
                 }}
               >
-                {sym}
+                {sym.label}
               </button>
             ))}
           </div>
         </div>
 
-        {/* Right Status Controls */}
-        <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
-          {/* Account Equity & PnL Capsule */}
+        {/* Right: Quick Controls & Financial Summary */}
+        <div style={{ display: "flex", alignItems: "center", gap: "8px", flexShrink: 0 }}>
+          {/* Equity & PnL Capsule */}
           <div
             style={{
               display: "flex",
               alignItems: "center",
-              gap: "10px",
-              padding: "4px 12px",
-              borderRadius: "20px",
+              gap: "8px",
+              padding: "3px 10px",
+              borderRadius: "14px",
               background: "rgba(15, 19, 28, 0.85)",
-              backdropFilter: "blur(12px)",
-              WebkitBackdropFilter: "blur(12px)",
               border: "1px solid rgba(255, 255, 255, 0.12)",
               fontFamily: "var(--font-mono)",
-              fontSize: "11px",
-              boxShadow: "0 4px 16px rgba(0, 0, 0, 0.3)",
+              fontSize: "10.5px",
             }}
           >
-            {/* Wallet / Equity */}
-            <div style={{ display: "flex", alignItems: "center", gap: "5px" }}>
-              <Wallet size={13} color="var(--accent-cyan)" />
-              <span style={{ color: "var(--text-muted)", fontSize: "10px", fontWeight: 700 }}>EQUITY</span>
+            <div style={{ display: "flex", alignItems: "center", gap: "4px" }}>
+              <Wallet size={12} color="var(--accent-cyan)" />
               <span style={{ color: "#FFFFFF", fontWeight: 800 }}>${formatPriceDynamic(accountMetrics.equity, 2)}</span>
             </div>
 
-            <span style={{ color: "rgba(255, 255, 255, 0.15)" }}>|</span>
+            <span style={{ color: "rgba(255, 255, 255, 0.2)" }}>|</span>
 
-            {/* Realized PnL */}
-            <div style={{ display: "flex", alignItems: "center", gap: "4px" }}>
-              <span style={{ color: "var(--text-muted)", fontSize: "10px", fontWeight: 700 }}>REALIZED</span>
-              <span style={{ fontWeight: 800, color: accountMetrics.realized >= 0 ? "#00F5A0" : "#FF495C" }}>
-                {accountMetrics.realized >= 0 ? "+" : ""}${formatPriceDynamic(accountMetrics.realized, 2)}
-              </span>
-            </div>
+            <span style={{ fontWeight: 800, color: accountMetrics.realized >= 0 ? "#00F5A0" : "#FF495C" }}>
+              {accountMetrics.realized >= 0 ? "+" : ""}${formatPriceDynamic(accountMetrics.realized, 2)}
+            </span>
 
-            {/* Active Unrealized PnL */}
             {accountMetrics.openPos && (
               <>
-                <span style={{ color: "rgba(255, 255, 255, 0.15)" }}>|</span>
-                <div style={{ display: "flex", alignItems: "center", gap: "4px" }}>
-                  <span style={{ color: "var(--text-muted)", fontSize: "10px", fontWeight: 700 }}>UNREALIZED</span>
-                  <span
-                    style={{
-                      fontWeight: 800,
-                      color: accountMetrics.unpnl >= 0 ? "#00F5A0" : "#FF495C",
-                      background: accountMetrics.unpnl >= 0 ? "rgba(0, 245, 160, 0.15)" : "rgba(255, 73, 92, 0.15)",
-                      padding: "1px 6px",
-                      borderRadius: "4px",
-                      border: `1px solid ${accountMetrics.unpnl >= 0 ? "rgba(0, 245, 160, 0.35)" : "rgba(255, 73, 92, 0.35)"}`,
-                    }}
-                  >
-                    {accountMetrics.unpnl >= 0 ? "+" : ""}${formatPriceDynamic(accountMetrics.unpnl, 2)} ({accountMetrics.unpnlPct >= 0 ? "+" : ""}{accountMetrics.unpnlPct.toFixed(2)}%)
-                  </span>
-                </div>
+                <span style={{ color: "rgba(255, 255, 255, 0.2)" }}>|</span>
+                <span
+                  style={{
+                    fontWeight: 800,
+                    color: accountMetrics.unpnl >= 0 ? "#00F5A0" : "#FF495C",
+                    background: accountMetrics.unpnl >= 0 ? "rgba(0, 245, 160, 0.15)" : "rgba(255, 73, 92, 0.15)",
+                    padding: "1px 5px",
+                    borderRadius: "3px",
+                  }}
+                >
+                  {accountMetrics.unpnl >= 0 ? "+" : ""}{accountMetrics.unpnlPct.toFixed(1)}%
+                </span>
               </>
             )}
           </div>
-          {/* Session Badge */}
-          <div style={{ padding: "5px 10px", borderRadius: "20px", fontSize: "11px", fontWeight: 700, display: "flex", alignItems: "center", gap: "6px" }} className={badge.class}>
-            <Clock size={13} />
-            <span>{badge.text}</span>
-            <span style={{ fontSize: "10px", opacity: 0.8 }} className="mono">
-              ({session?.marketType || "CRYPTO_FUTURES_24X7"} · {new Date().toISOString().slice(11, 16)} UTC)
-            </span>
+
+          {/* Streaming Status Pill */}
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: "5px",
+              fontSize: "10px",
+              fontWeight: 700,
+              padding: "3px 8px",
+              borderRadius: "12px",
+              background: wsConnected ? "rgba(0, 245, 160, 0.12)" : "rgba(255, 73, 92, 0.12)",
+              color: wsConnected ? "#00F5A0" : "#FF495C",
+              border: `1px solid ${wsConnected ? "rgba(0, 245, 160, 0.3)" : "rgba(255, 73, 92, 0.3)"}`,
+            }}
+          >
+            <span style={{ width: "6px", height: "6px", borderRadius: "50%", backgroundColor: wsConnected ? "#00F5A0" : "#FF495C" }} />
+            <span>{wsConnected ? "24×7 LIVE" : "OFFLINE"}</span>
           </div>
 
-          {/* WebSocket Badge */}
-          <div style={{ display: "flex", alignItems: "center", gap: "6px", fontSize: "11px", color: wsConnected ? "var(--accent-green)" : "var(--accent-red)" }}>
-            <span style={{ width: "8px", height: "8px", borderRadius: "50%", backgroundColor: wsConnected ? "var(--accent-green)" : "var(--accent-red)", boxShadow: wsConnected ? "0 0 10px #00F5A0" : "none" }} />
-            <span className="mono">{wsConnected ? "STREAMING" : "OFFLINE"}</span>
-          </div>
+          {/* AI Results Dashboard Button */}
+          <button
+            onClick={() => setActiveTab(activeTab === "ai_supertrend" ? "terminal" : "ai_supertrend")}
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: "5px",
+              padding: "4px 10px",
+              borderRadius: "5px",
+              color: activeTab === "ai_supertrend" ? "#00F5A0" : "#FFD700",
+              border: activeTab === "ai_supertrend" ? "1px solid #00F5A0" : "1px solid rgba(255, 215, 0, 0.35)",
+              background: activeTab === "ai_supertrend" ? "rgba(0, 245, 160, 0.2)" : "rgba(255, 215, 0, 0.1)",
+              fontSize: "10.5px",
+              fontWeight: 800,
+              cursor: "pointer",
+              transition: "all 0.15s ease",
+            }}
+          >
+            <Brain size={12} />
+            <span>{activeTab === "ai_supertrend" ? "CHART VIEW" : "AI WORKBENCH"}</span>
+          </button>
 
           {/* 20-Depth Toggle Button */}
           <button
@@ -490,38 +529,38 @@ export function App() {
             style={{
               display: "flex",
               alignItems: "center",
-              gap: "6px",
-              padding: "6px 12px",
-              borderRadius: "6px",
+              gap: "4px",
+              padding: "4px 8px",
+              borderRadius: "5px",
               color: showDepthPanel ? "var(--accent-green)" : "var(--text-secondary)",
-              fontSize: "11px",
+              fontSize: "10.5px",
               fontWeight: 600,
               cursor: "pointer",
             }}
           >
-            {showDepthPanel ? <PanelRightClose size={16} /> : <PanelRightOpen size={16} />}
-            <span>20-DEPTH PANEL</span>
+            {showDepthPanel ? <PanelRightClose size={14} /> : <PanelRightOpen size={14} />}
+            <span>DEPTH</span>
           </button>
 
-          {/* Kill Switch Toggle Button */}
+          {/* Trader Controls / Kill Switch */}
           <button
             onClick={toggleKillSwitch}
             style={{
               display: "flex",
               alignItems: "center",
-              gap: "6px",
-              padding: "6px 12px",
-              borderRadius: "6px",
+              gap: "4px",
+              padding: "4px 8px",
+              borderRadius: "5px",
               background: killSwitchActive ? "rgba(255,73,92,0.2)" : "rgba(255,255,255,0.05)",
               border: killSwitchActive ? "1px solid var(--accent-red)" : "1px solid var(--border-color)",
               color: killSwitchActive ? "var(--accent-red)" : "var(--text-secondary)",
-              fontSize: "11px",
+              fontSize: "10.5px",
               fontWeight: 600,
               cursor: "pointer",
             }}
           >
-            <Lock size={14} />
-            <span>{killSwitchActive ? "KILL ACTIVE" : "TRADER CONTROLS"}</span>
+            <Lock size={12} />
+            <span>{killSwitchActive ? "LOCKED" : "CONTROLS"}</span>
           </button>
         </div>
       </header>
@@ -553,6 +592,7 @@ export function App() {
 
           {[
             { id: "terminal", label: "Real-Time Terminal", icon: BarChart2 },
+            { id: "ai_supertrend", label: "AI Supertrend & Results Dashboard", icon: Brain },
             { id: "backtest", label: "Futures Backtest Workbench", icon: Activity },
             { id: "intel", label: "Futures Intel & OI", icon: Layers },
             { id: "bias", label: "Multi-Timeframe Bias", icon: TrendingUp },
@@ -660,7 +700,17 @@ export function App() {
             </div>
           )}
 
-          {/* TAB 2: FUTURES BACKTEST WORKBENCH */}
+          {/* TAB 2: ADAPTIVE SUPERTREND & LOCAL OLLAMA WORKBENCH */}
+          {activeTab === "ai_supertrend" && (
+            <AdaptiveSupertrendWorkbench
+              adapter={adapterInstance}
+              selectedSymbol={selectedSymbol}
+              selectedInterval={selectedInterval}
+              livePrice={tick?.ltp}
+            />
+          )}
+
+          {/* TAB 3: FUTURES BACKTEST WORKBENCH */}
           {activeTab === "backtest" && (
             <FuturesBacktestWorkbench symbol={selectedSymbol} />
           )}

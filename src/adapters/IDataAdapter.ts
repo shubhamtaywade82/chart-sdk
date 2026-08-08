@@ -16,6 +16,8 @@ export interface Candle {
 export interface OrderBookLevel {
   price: number;
   qty: number;
+  quantity?: number;
+  orders?: number;
 }
 
 export interface TickPayload {
