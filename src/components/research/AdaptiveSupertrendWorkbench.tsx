@@ -1965,6 +1965,36 @@ export const AdaptiveSupertrendWorkbench: React.FC<AdaptiveSupertrendWorkbenchPr
                     >
                       {adxAutoMode ? "🤖 AUTO-OPTIMIZE: ON" : "⚙️ MANUAL MODE"}
                     </button>
+                    <button
+                      onClick={() => {
+                        window.dispatchEvent(
+                          new CustomEvent("chart:apply_adx_tuner", {
+                            detail: { length: adxLength, threshold: adxThreshold },
+                          })
+                        );
+                        try {
+                          localStorage.setItem(`adx_tuner_${selectedSymbol.toLowerCase()}_${currentInterval}_len`, String(adxLength));
+                          localStorage.setItem(`adx_tuner_${selectedSymbol.toLowerCase()}_${currentInterval}_thresh`, String(adxThreshold));
+                          localStorage.setItem("chart_show_adx_tuner", "true");
+                        } catch {}
+                      }}
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        gap: "6px",
+                        padding: "6px 14px",
+                        borderRadius: "6px",
+                        background: "rgba(0, 229, 255, 0.15)",
+                        border: "1px solid #00E5FF",
+                        color: "#00E5FF",
+                        fontSize: "11px",
+                        fontWeight: 700,
+                        cursor: "pointer",
+                      }}
+                    >
+                      <CheckCircle2 size={13} />
+                      APPLY TO CHART
+                    </button>
 
                     <button
                       onClick={handleRunAdxOptimization}
@@ -2225,19 +2255,29 @@ export const AdaptiveSupertrendWorkbench: React.FC<AdaptiveSupertrendWorkbenchPr
                                     setAdxLength(cand.length);
                                     setAdxThreshold(cand.threshold);
                                     if (candles.length > 0) setAdxSeries(AutoTuningADX.calculate(candles, cand.length));
+                                    window.dispatchEvent(
+                                      new CustomEvent("chart:apply_adx_tuner", {
+                                        detail: { length: cand.length, threshold: cand.threshold },
+                                      })
+                                    );
+                                    try {
+                                      localStorage.setItem(`adx_tuner_${selectedSymbol.toLowerCase()}_${currentInterval}_len`, String(cand.length));
+                                      localStorage.setItem(`adx_tuner_${selectedSymbol.toLowerCase()}_${currentInterval}_thresh`, String(cand.threshold));
+                                      localStorage.setItem("chart_show_adx_tuner", "true");
+                                    } catch {}
                                   }}
                                   style={{
                                     padding: "4px 8px",
                                     borderRadius: "4px",
-                                    background: "rgba(255,255,255,0.08)",
-                                    border: "1px solid rgba(255,255,255,0.15)",
-                                    color: "white",
+                                    background: "rgba(0, 229, 255, 0.15)",
+                                    border: "1px solid #00E5FF",
+                                    color: "#00E5FF",
                                     fontSize: "10px",
                                     fontWeight: 700,
                                     cursor: "pointer",
                                   }}
                                 >
-                                  Apply Preset
+                                  Apply to Chart
                                 </button>
                               </td>
                             </tr>

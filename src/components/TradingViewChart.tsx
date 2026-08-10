@@ -67,6 +67,8 @@ import {
   ICTAMDCycle,
 } from "../utils/ictEngine";
 import { scanSetups, resampleCandles, SetupSignal, HtfBias } from "../utils/setupScanner";
+import { ADXLiveTuner, ADX_THEMES, ADXTheme } from "./ADXLiveTuner";
+import { AutoTuningADX } from "../utils/autoTuningADX";
 import {
   PaperAccount,
   createPaperAccount,
@@ -498,6 +500,11 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
   const volumeSeriesRef = useRef<any>(null);
   const smaSeriesRef = useRef<any>(null);
   const emaSeriesRef = useRef<any>(null);
+  const adxSeriesRef = useRef<any>(null);
+  const diPlusSeriesRef = useRef<any>(null);
+  const diMinusSeriesRef = useRef<any>(null);
+  const adxThresholdSeriesRef = useRef<any>(null);
+  const showADXTunerRef = useRef<boolean>(false);
   const lastCandleValRef = useRef<any>(null);
   const allCandlesRef = useRef<any[]>([]);
 
@@ -869,6 +876,76 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
     });
   };
 
+  // ADX Live Tuner (True Wilder Smoothed with on-chart live parameter optimization)
+  const [showADXTuner, setShowADXTuner] = useState<boolean>(() => {
+    try {
+      const saved = localStorage.getItem("chart_show_adx_tuner") === "true";
+      showADXTunerRef.current = saved;
+      return saved;
+    } catch {}
+    return false;
+  });
+
+  const updateChartADX = (candles: any[], len?: number, thresh?: number, thObj?: ADXTheme) => {
+    const sKey = `adx_tuner_${symbol.toLowerCase()}_${interval}`;
+    const effectiveLen = len ?? parseInt(localStorage.getItem(`${sKey}_len`) || "14", 10);
+    const effectiveThresh = thresh ?? parseFloat(localStorage.getItem(`${sKey}_thresh`) || "25");
+    const effectiveTheme = thObj ?? (ADX_THEMES[localStorage.getItem("adx_tuner_theme") || "nightCyan"] || ADX_THEMES.nightCyan);
+
+    if (!candles || candles.length < effectiveLen * 2) return;
+    const adxRes = AutoTuningADX.calculate(candles, effectiveLen);
+    if (!adxRes || adxRes.adx.length === 0) return;
+
+    const adxData = adxRes.adx.map((val, idx) => ({ time: adxRes.times[idx] as any, value: val }));
+    const pdiData = adxRes.diPlus.map((val, idx) => ({ time: adxRes.times[idx] as any, value: val }));
+    const mdiData = adxRes.diMinus.map((val, idx) => ({ time: adxRes.times[idx] as any, value: val }));
+    const threshData = adxRes.times.map((t) => ({ time: t as any, value: effectiveThresh }));
+
+    if (adxSeriesRef.current) {
+      adxSeriesRef.current.setData(adxData);
+      adxSeriesRef.current.applyOptions({ color: effectiveTheme.adxColor, visible: showADXTunerRef.current });
+    }
+    if (diPlusSeriesRef.current) {
+      diPlusSeriesRef.current.setData(pdiData);
+      diPlusSeriesRef.current.applyOptions({ color: effectiveTheme.diPlusColor, visible: showADXTunerRef.current });
+    }
+    if (diMinusSeriesRef.current) {
+      diMinusSeriesRef.current.setData(mdiData);
+      diMinusSeriesRef.current.applyOptions({ color: effectiveTheme.diMinusColor, visible: showADXTunerRef.current });
+    }
+    if (adxThresholdSeriesRef.current) {
+      adxThresholdSeriesRef.current.setData(threshData);
+      adxThresholdSeriesRef.current.applyOptions({ color: effectiveTheme.thresholdColor, visible: showADXTunerRef.current });
+    }
+  };
+
+  const toggleADXTuner = () => {
+    setShowADXTuner((prev) => {
+      const next = !prev;
+      showADXTunerRef.current = next;
+      try { localStorage.setItem("chart_show_adx_tuner", String(next)); } catch {}
+      if (adxSeriesRef.current) adxSeriesRef.current.applyOptions({ visible: next });
+      if (diPlusSeriesRef.current) diPlusSeriesRef.current.applyOptions({ visible: next });
+      if (diMinusSeriesRef.current) diMinusSeriesRef.current.applyOptions({ visible: next });
+      if (adxThresholdSeriesRef.current) adxThresholdSeriesRef.current.applyOptions({ visible: next });
+      if (next && allCandlesRef.current.length > 0) {
+        updateChartADX(allCandlesRef.current);
+      }
+      return next;
+    });
+  };
+
+  // Sync ADX on-chart series when tuned from widget or workbench
+  useEffect(() => {
+    const onApplyADX = (e: any) => {
+      const { length: newL, threshold: newT, themeId: newTh } = e.detail || {};
+      const thObj = newTh ? ADX_THEMES[newTh] : undefined;
+      updateChartADX(allCandlesRef.current, newL, newT, thObj);
+    };
+    window.addEventListener("chart:apply_adx_tuner", onApplyADX);
+    return () => window.removeEventListener("chart:apply_adx_tuner", onApplyADX);
+  }, [symbol, interval]);
+
   // Immediate repaint on any indicator toggle change
   useEffect(() => {
     scheduleDraw();
@@ -1024,10 +1101,11 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
     cp: { label: "Candlestick Patterns", color: "#FFD700", icon: "🔨", get: () => showCP, set: (v) => { persistIndicator("chart_show_cp", v); setShowCP(v); } },
     volumeProfile: { label: "Volume Profile (VPVR, POC, VAH, VAL)", color: "#FFD700", get: () => showVolumeProfile, set: (v) => { persistIndicator("chart_show_volume_profile", v); setShowVolumeProfile(v); } },
     adaptiveSupertrend: { label: "Adaptive Supertrend (AI-KNN)", color: "#00F5A0", icon: "🤖", get: () => showAdaptiveSupertrend, set: (v) => { persistIndicator("chart_show_adaptive_supertrend", v); setShowAdaptiveSupertrend(v); } },
+    adxTuner: { label: "ADX Live Tuner (Wilder Smoothed)", color: "#00E5FF", icon: "🎯", get: () => showADXTuner, set: (v) => { try { localStorage.setItem("chart_show_adx_tuner", String(v)); } catch {} setShowADXTuner(v); } },
   };
 
   const INDICATOR_SETS: IndicatorSetDef[] = [
-    { id: "ai", label: "AI & ADAPTIVE SYSTEMS", keys: ["adaptiveSupertrend"] },
+    { id: "ai", label: "AI & ADAPTIVE SYSTEMS", keys: ["adaptiveSupertrend", "adxTuner"] },
     { id: "ma", label: "MOVING AVERAGES", keys: ["sma20", "ema9"] },
     { id: "smc", label: "SMART MONEY CONCEPTS (SMC)", keys: ["fvg", "ob", "structure", "liquidity", "equilibrium", "volumeProfile"] },
     { id: "ict", label: "ICT", keys: ["ictSessions", "silverBullet", "ote", "judas", "amd"] },
@@ -2496,6 +2574,63 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
               emaData.push({ time: formattedCandles[i].time, value: Number(ema.toFixed(2)) });
             }
             emaSeries.setData(emaData);
+
+            // 3. True Wilder ADX, +DI, -DI & Threshold Line Series on dedicated ADX Pane Scale
+            const sKey = `adx_tuner_${symbol.toLowerCase()}_${interval}`;
+            const adxThId = localStorage.getItem("adx_tuner_theme") || "nightCyan";
+            const adxThemeObj = ADX_THEMES[adxThId] || ADX_THEMES.nightCyan;
+            const isAdxVis = showADXTunerRef.current;
+
+            const adxSeries = chart.addSeries(LineSeries, {
+              color: adxThemeObj.adxColor,
+              lineWidth: 2,
+              title: "ADX",
+              priceScaleId: "adx",
+              priceLineVisible: false,
+              lastValueVisible: false,
+              visible: isAdxVis,
+            });
+            adxSeries.priceScale().applyOptions({
+              scaleMargins: { top: 0.76, bottom: 0.01 },
+              visible: false,
+            });
+            adxSeriesRef.current = adxSeries;
+
+            const diPlusSeries = chart.addSeries(LineSeries, {
+              color: adxThemeObj.diPlusColor,
+              lineWidth: 1.5,
+              title: "+DI",
+              priceScaleId: "adx",
+              priceLineVisible: false,
+              lastValueVisible: false,
+              visible: isAdxVis,
+            });
+            diPlusSeriesRef.current = diPlusSeries;
+
+            const diMinusSeries = chart.addSeries(LineSeries, {
+              color: adxThemeObj.diMinusColor,
+              lineWidth: 1.5,
+              title: "-DI",
+              priceScaleId: "adx",
+              priceLineVisible: false,
+              lastValueVisible: false,
+              visible: isAdxVis,
+            });
+            diMinusSeriesRef.current = diMinusSeries;
+
+            const adxThreshSeries = chart.addSeries(LineSeries, {
+              color: adxThemeObj.thresholdColor,
+              lineWidth: 1,
+              lineStyle: LineStyle.Dotted,
+              title: "TH",
+              priceScaleId: "adx",
+              priceLineVisible: false,
+              lastValueVisible: false,
+              visible: isAdxVis,
+            });
+            adxThresholdSeriesRef.current = adxThreshSeries;
+
+            updateChartADX(formattedCandles);
           }
 
           applyScaleSettingsToChart(scaleSettingsRef.current);
@@ -3623,6 +3758,28 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
             )}
           </div>
 
+          {/* Quick ADX Live Tuner Toggle */}
+          <button
+            onClick={toggleADXTuner}
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: "4px",
+              background: showADXTuner ? "rgba(0, 229, 255, 0.2)" : "rgba(255, 255, 255, 0.06)",
+              color: showADXTuner ? "#00E5FF" : "var(--text-muted)",
+              border: showADXTuner ? "1px solid #00E5FF" : "1px solid rgba(255, 255, 255, 0.15)",
+              padding: "2px 8px",
+              borderRadius: "4px",
+              fontSize: "11px",
+              fontWeight: 700,
+              cursor: "pointer",
+              transition: "all 0.2s ease",
+            }}
+          >
+            <span>🎯</span>
+            <span>ADX TUNER</span>
+          </button>
+
           <span style={{ color: "rgba(255, 255, 255, 0.2)" }}>•</span>
 
           {/* GROUP 1: MOVING AVERAGES */}
@@ -4154,6 +4311,19 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
           AUTO
         </button>
       </div>
+
+      {/* Floating ADX Live Tuner Widget */}
+      {showADXTuner && (
+        <ADXLiveTuner
+          candles={allCandlesRef.current}
+          symbol={symbol}
+          interval={interval}
+          onClose={() => {
+            try { localStorage.setItem("chart_show_adx_tuner", "false"); } catch {}
+            setShowADXTuner(false);
+          }}
+        />
+      )}
 
       {/* Canvas Container */}
       <div ref={chartContainerRef} style={{ width: "100%", height: "100%", minHeight: "520px" }} />
