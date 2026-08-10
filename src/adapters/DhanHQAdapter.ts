@@ -2,6 +2,7 @@ import type {
   IDataAdapter, Candle, OrderBookLevel, TickPayload,
   SymbolDef, IntervalDef, FundsSnapshot,
 } from "./IDataAdapter";
+import { resampleCandles } from "../utils/setupScanner";
 
 // DhanHQ adapter — NSE/BSE markets (equity + F&O).
 // Calls the chart-sdk backend which proxies to the existing dhanhq-charts server.
@@ -29,26 +30,40 @@ export class DhanHQAdapter implements IDataAdapter {
       { key: "5",  label: "5m"  },
       { key: "15", label: "15m" },
       { key: "30", label: "30m" },
-      { key: "60", label: "1h"  },
+      { key: "60", label: "1H"  },
+      { key: "4h", label: "4H"  },
+      { key: "1d", label: "1D"  },
     ];
   }
 
   async fetchCandles(symbol: string, interval: string, _limit = 500): Promise<Candle[]> {
-    const res = await fetch(`/api/dhanhq/charts/intraday?symbol=${encodeURIComponent(symbol)}&interval=${encodeURIComponent(interval)}`);
+    const is4h = interval === "4h" || interval === "4H";
+    const is1d = interval === "1d" || interval === "1D";
+    const reqInterval = is4h || is1d ? "60" : interval;
+    const res = await fetch(`/api/dhanhq/charts/intraday?symbol=${encodeURIComponent(symbol)}&interval=${encodeURIComponent(reqInterval)}`);
     const json = await res.json();
-    return Array.isArray(json?.candles) ? json.candles : [];
+    const rawCandles: Candle[] = Array.isArray(json?.candles) ? json.candles : [];
+    if (is4h) return resampleCandles(rawCandles, 4 * 3600).map((c) => ({ ...c, volume: c.volume ?? 0 }));
+    if (is1d) return resampleCandles(rawCandles, 86400).map((c) => ({ ...c, volume: c.volume ?? 0 }));
+    return rawCandles;
   }
 
   async fetchHistoricalCandles(
     symbol: string, interval: string, fromTs: number, toTs: number
   ): Promise<Candle[]> {
+    const is4h = interval === "4h" || interval === "4H";
+    const is1d = interval === "1d" || interval === "1D";
+    const reqInterval = is4h || is1d ? "60" : interval;
     const from = new Date(fromTs * 1000).toISOString();
     const to   = new Date(toTs * 1000).toISOString();
     const res  = await fetch(
-      `/api/dhanhq/charts/historical?symbol=${encodeURIComponent(symbol)}&interval=${encodeURIComponent(interval)}&fromDate=${encodeURIComponent(from)}&toDate=${encodeURIComponent(to)}`
+      `/api/dhanhq/charts/historical?symbol=${encodeURIComponent(symbol)}&interval=${encodeURIComponent(reqInterval)}&fromDate=${encodeURIComponent(from)}&toDate=${encodeURIComponent(to)}`
     );
     const json = await res.json();
-    return Array.isArray(json?.candles) ? json.candles : [];
+    const rawCandles: Candle[] = Array.isArray(json?.candles) ? json.candles : [];
+    if (is4h) return resampleCandles(rawCandles, 4 * 3600).map((c) => ({ ...c, volume: c.volume ?? 0 }));
+    if (is1d) return resampleCandles(rawCandles, 86400).map((c) => ({ ...c, volume: c.volume ?? 0 }));
+    return rawCandles;
   }
 
   subscribeToTick(
@@ -57,9 +72,12 @@ export class DhanHQAdapter implements IDataAdapter {
     onCandle: (c: Candle) => void,
     onTick: (t: TickPayload) => void
   ): () => void {
+    const is4h = interval === "4h" || interval === "4H";
+    const is1d = interval === "1d" || interval === "1D";
+    const reqInterval = is4h || is1d ? "60" : interval;
     const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
     const host = window.location.host;
-    const wsUrl = `${protocol}//${host}/ws/dhanhq/feed?symbol=${encodeURIComponent(symbol)}&interval=${encodeURIComponent(interval)}`;
+    const wsUrl = `${protocol}//${host}/ws/dhanhq/feed?symbol=${encodeURIComponent(symbol)}&interval=${encodeURIComponent(reqInterval)}`;
     const ws = new WebSocket(wsUrl);
 
     ws.onopen = () => {

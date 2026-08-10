@@ -20,10 +20,19 @@ const safeCloseSocket = (socket: WebSocket | null) => {
   } catch {}
 };
 
+function normalizeBinanceInterval(interval: string): string {
+  const s = (interval || "15").toLowerCase().trim();
+  if (s === "1d" || s === "d" || s === "day") return "1d";
+  if (s === "60" || s === "60m" || s === "1h") return "1h";
+  if (s === "4h") return "4h";
+  if (s.endsWith("m") || s.endsWith("h") || s.endsWith("d") || s.endsWith("w")) return s;
+  return `${s}m`;
+}
+
 // Binance Futures adapter — connects to backend proxy with auto-fallback to direct Binance streams
 export class BinanceAdapter implements IDataAdapter {
   readonly id = "binance";
-  readonly name = "Binance Futures";
+  readonly name = "Binance Futures (USDT-M)";
   readonly currency = "$";
   readonly is24x7 = true;
 
@@ -46,8 +55,8 @@ export class BinanceAdapter implements IDataAdapter {
       { key: "5",   label: "5m"  },
       { key: "15",  label: "15m" },
       { key: "30",  label: "30m" },
-      { key: "60",  label: "1h"  },
-      { key: "4h",  label: "4h"  },
+      { key: "60",  label: "1H"  },
+      { key: "4h",  label: "4H"  },
       { key: "1d",  label: "1D"  },
     ];
   }
@@ -65,7 +74,7 @@ export class BinanceAdapter implements IDataAdapter {
     try {
       const normSym = symbol.toUpperCase().replace(/[^A-Z0-9]/g, "");
       const binanceSym = normSym.endsWith("USDT") ? normSym : `${normSym}USDT`;
-      const binanceInterval = interval === "1D" || interval === "1d" ? "1d" : interval.endsWith("m") || interval.endsWith("h") ? interval : `${interval}m`;
+      const binanceInterval = normalizeBinanceInterval(interval);
       const direct = await fetch(`https://api.binance.com/api/v3/klines?symbol=${binanceSym}&interval=${binanceInterval}&limit=${limit}`);
       if (direct.ok) {
         const raw = await direct.json();
@@ -114,7 +123,7 @@ export class BinanceAdapter implements IDataAdapter {
 
     const normSym = symbol.toLowerCase().replace(/[^a-z0-9]/g, "");
     const binanceSym = normSym.endsWith("usdt") ? normSym : `${normSym}usdt`;
-    const binanceInterval = interval === "1D" || interval === "1d" ? "1d" : interval.endsWith("m") || interval.endsWith("h") ? interval : `${interval}m`;
+    const binanceInterval = normalizeBinanceInterval(interval);
 
     const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
     const host = window.location.host;

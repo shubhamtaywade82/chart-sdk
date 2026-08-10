@@ -76,7 +76,8 @@ export function App() {
   });
   const [selectedInterval, setSelectedInterval] = useState(() => {
     const saved = localStorage.getItem("dhan_selectedInterval");
-    return saved && ["1", "5", "15", "30", "60"].includes(saved) ? saved : "15";
+    const validKeys = adapterInstance.getIntervals().map((i) => i.key);
+    return saved && validKeys.includes(saved) ? saved : "15";
   });
 
   // Collapsible Sidebar States
@@ -839,22 +840,22 @@ export function App() {
                     <span>{selectedSymbol.toUpperCase()} Intraday Candlesticks (Auto-Date Normalization)</span>
                   </div>
                   <div style={{ display: "flex", gap: "6px" }}>
-                    {["1", "5", "15", "30", "60"].map((m) => (
+                    {adapterInstance.getIntervals().map((item) => (
                       <button
-                        key={m}
-                        onClick={() => setSelectedInterval(m)}
+                        key={item.key}
+                        onClick={() => setSelectedInterval(item.key)}
                         style={{
                           padding: "4px 8px",
                           fontSize: "11px",
                           fontWeight: 600,
                           borderRadius: "4px",
-                          background: selectedInterval === m ? "var(--accent-cyan)" : "rgba(255,255,255,0.05)",
-                          color: selectedInterval === m ? "#0A0D14" : "var(--text-secondary)",
+                          background: selectedInterval === item.key ? "var(--accent-cyan)" : "rgba(255,255,255,0.05)",
+                          color: selectedInterval === item.key ? "#0A0D14" : "var(--text-secondary)",
                           border: "none",
                           cursor: "pointer",
                         }}
                       >
-                        {`${m}m`}
+                        {item.label}
                       </button>
                     ))}
                   </div>

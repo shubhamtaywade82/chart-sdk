@@ -90,11 +90,36 @@ export interface CandleTheme {
   priceLineColor: string;
 }
 
+export const intervalToMinutes = (interval: string): number => {
+  if (!interval) return 15;
+  const s = interval.trim().toLowerCase();
+  if (s === "1d" || s === "d" || s === "day") return 1440;
+  if (s === "1w" || s === "w" || s === "week") return 10080;
+  if (s.endsWith("h")) {
+    const h = parseFloat(s.slice(0, -1));
+    return isNaN(h) ? 60 : Math.round(h * 60);
+  }
+  if (s.endsWith("m")) {
+    const m = parseFloat(s.slice(0, -1));
+    return isNaN(m) ? 15 : Math.round(m);
+  }
+  if (s.endsWith("s")) {
+    const sec = parseFloat(s.slice(0, -1));
+    return isNaN(sec) ? 1 : Math.max(1, Math.round(sec / 60));
+  }
+  const num = parseFloat(s);
+  return isNaN(num) ? 15 : num;
+};
+
+export const intervalToSeconds = (interval: string): number => {
+  return intervalToMinutes(interval) * 60;
+};
+
 export const CandleCountdown = React.memo(function CandleCountdown({ interval }: { interval: string }) {
   const [value, setValue] = useState("00:00");
 
   useEffect(() => {
-    const barSeconds = (parseInt(interval, 10) || 15) * 60;
+    const barSeconds = intervalToSeconds(interval);
 
     const update = () => {
       const nowUnix = Math.floor(Date.now() / 1000);
@@ -102,9 +127,10 @@ export const CandleCountdown = React.memo(function CandleCountdown({ interval }:
       const nextBarStart = currentBarStart + barSeconds;
       const diff = Math.max(0, nextBarStart - nowUnix);
 
-      const mins = Math.floor(diff / 60).toString().padStart(2, "0");
+      const hours = Math.floor(diff / 3600);
+      const mins = Math.floor((diff % 3600) / 60).toString().padStart(2, "0");
       const secs = (diff % 60).toString().padStart(2, "0");
-      setValue(`${mins}:${secs}`);
+      setValue(hours > 0 ? `${hours}:${mins}:${secs}` : `${mins}:${secs}`);
     };
 
     update();
@@ -202,9 +228,9 @@ export interface IndicatorSetDef {
   keys: string[];
 }
 
-// HTF bias ladder: only Binance kline intervals (1/5/15/30/60m) as bases
+// HTF bias ladder: kline intervals (1/3/5/15/30/60m, 4h, 1D) as bases
 const autoHtfMult = (baseMin: number): number => {
-  const ladder: Record<number, number> = { 1: 5, 5: 3, 15: 4, 30: 2, 60: 4 };
+  const ladder: Record<number, number> = { 1: 5, 3: 5, 5: 3, 15: 4, 30: 2, 60: 4, 240: 6, 1440: 7 };
   return ladder[baseMin] ?? 4;
 };
 
@@ -1194,10 +1220,10 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
     const price = targetPriceRef.current ?? lastCandleValRef.current?.close;
     if (price === undefined || price === null) return;
 
-    const baseMin = parseInt(interval, 10) || 15;
+    const baseMin = intervalToMinutes(interval);
     const htfMult = biasTfMult ?? autoHtfMult(baseMin);
     const htfMin = htfMult * baseMin;
-    const htfLabel = htfMin >= 60 ? `${htfMin / 60}h` : `${htfMin}m`;
+    const htfLabel = htfMin >= 1440 ? `${Math.round(htfMin / 1440)}D` : htfMin >= 60 ? `${Math.round(htfMin / 60)}h` : `${htfMin}m`;
     const htfCandles = getHtfCached(htfMult, "candles", () =>
       resampleCandles(allCandlesRef.current, htfMin * 60)
     );
@@ -1240,7 +1266,7 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
     if (!showSetupScan) return;
     const scan = () => {
       if (paperEnabledRef.current) paperTick();
-      const baseMin = parseInt(interval, 10) || 15;
+      const baseMin = intervalToMinutes(interval);
       const htfMult = biasTfMult ?? autoHtfMult(baseMin);
       const dataKey = `${candlesVersion(allCandlesRef.current)}|${htfMult}`;
       const price = targetPriceRef.current ?? lastCandleValRef.current?.close ?? null;
@@ -2589,7 +2615,7 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
       const visibleRange = chartRef.current.timeScale().getVisibleRange() as { from: number; to: number } | null;
       if (!visibleRange) return;
 
-      const intervalSecs = (parseInt(interval, 10) || 15) * 60;
+      const intervalSecs = intervalToSeconds(interval);
       const triggerThreshold = oldest.time + intervalSecs * 20;
       if (visibleRange.from > triggerThreshold) return; // still far from left edge
 
@@ -2682,7 +2708,7 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
 
   // 3. 60 FPS LERP Animation Loop for Smooth Price Line & Volume Bar Transitions
   useEffect(() => {
-    const barSeconds = (parseInt(interval, 10) || 15) * 60;
+    const barSeconds = intervalToSeconds(interval);
     let animId: number;
 
     const animateLerp = () => {
@@ -3327,10 +3353,16 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
                     }}
                   >
                     {(() => {
-                      const baseMin = parseInt(interval, 10) || 15;
+                      const baseMin = intervalToMinutes(interval);
+                      const autoMin = autoHtfMult(baseMin) * baseMin;
+                      const autoLabel = autoMin >= 1440 ? `${Math.round(autoMin / 1440)}D` : autoMin >= 60 ? `${Math.round(autoMin / 60)}h` : `${autoMin}m`;
                       const options: { mult: number | null; label: string }[] = [
-                        { mult: null, label: `AUTO (${autoHtfMult(baseMin) * baseMin}m)` },
-                        ...[2, 3, 4, 6, 12].map((m) => ({ mult: m, label: `${m * baseMin}m (${m}×)` })),
+                        { mult: null, label: `AUTO (${autoLabel})` },
+                        ...[2, 3, 4, 6, 12].map((m) => {
+                          const mMin = m * baseMin;
+                          const mLabel = mMin >= 1440 ? `${Math.round(mMin / 1440)}D` : mMin >= 60 ? `${Math.round(mMin / 60)}h` : `${mMin}m`;
+                          return { mult: m, label: `${mLabel} (${m}×)` };
+                        }),
                       ];
                       return options.map((o) => (
                         <option key={o.label} value={o.mult === null ? "auto" : String(o.mult)}>
