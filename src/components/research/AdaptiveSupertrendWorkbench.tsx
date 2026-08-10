@@ -41,6 +41,7 @@ import {
   ComprehensiveTradeDirective,
 } from "../../utils/marketDataConsensus";
 import { MarketRegimeEngine, MarketRegimeTelemetry } from "../../utils/marketRegimeEngine";
+import { AutoTuningADX, ADXOptimizationResult, ADXSeriesResult, ADXCandidateResult } from "../../utils/autoTuningADX";
 import type { IDataAdapter, Candle, OrderBookLevel } from "../../adapters/IDataAdapter";
 
 interface AdaptiveSupertrendWorkbenchProps {
@@ -97,12 +98,26 @@ export const AdaptiveSupertrendWorkbench: React.FC<AdaptiveSupertrendWorkbenchPr
   const [liveOrderBook, setLiveOrderBook] = useState<{ bids: OrderBookLevel[]; asks: OrderBookLevel[] }>({ bids: [], asks: [] });
   const [backtestResult, setBacktestResult] = useState<BacktestSummary | null>(null);
   const [isBacktesting, setIsBacktesting] = useState<boolean>(false);
-  const [activeTab, setActiveTab] = useState<"metrics" | "optimizer" | "mtf_matrix" | "telemetry" | "trades" | "ollama_sandbox" | "docs">("metrics");
+  const [activeTab, setActiveTab] = useState<
+    "metrics" | "optimizer" | "mtf_matrix" | "adx_autotune" | "telemetry" | "trades" | "ollama_sandbox" | "docs"
+  >("metrics");
   const [optimizationCandidates, setOptimizationCandidates] = useState<OptimizationCandidate[]>([]);
   const [isOptimizing, setIsOptimizing] = useState<boolean>(false);
   const [isLLMSweeping, setIsLLMSweeping] = useState<boolean>(false);
   const [activePresetId, setActivePresetId] = useState<string | null>("prime_scalper");
   const [showOllamaConfig, setShowOllamaConfig] = useState<boolean>(false);
+
+  // Auto-Tuning ADX State
+  const [adxLength, setAdxLength] = useState<number>(14);
+  const [adxThreshold, setAdxThreshold] = useState<number>(25);
+  const [adxLengthMin, setAdxLengthMin] = useState<number>(8);
+  const [adxLengthMax, setAdxLengthMax] = useState<number>(20);
+  const [adxThreshMin, setAdxThreshMin] = useState<number>(18);
+  const [adxThreshMax, setAdxThreshMax] = useState<number>(32);
+  const [adxAutoMode, setAdxAutoMode] = useState<boolean>(true);
+  const [adxOptResult, setAdxOptResult] = useState<ADXOptimizationResult | null>(null);
+  const [isAutoTuningADX, setIsAutoTuningADX] = useState<boolean>(false);
+  const [adxSeries, setAdxSeries] = useState<ADXSeriesResult | null>(null);
 
   const handleApplyPreset = (preset: StrategyPreset) => {
     setActivePresetId(preset.id);
@@ -253,9 +268,10 @@ export const AdaptiveSupertrendWorkbench: React.FC<AdaptiveSupertrendWorkbenchPr
         const fetched = await adapter.fetchCandles(selectedSymbol, tf, 500);
         if (sweepEpochRef.current !== epoch) return; // stale — symbol switched or unmounted
         if (fetched && fetched.length >= 20) {
+          const tuned = AutoTuningADX.getTuned(fetched, selectedSymbol, tf);
+          const adxResult = AutoTuningADX.calculate(fetched, tuned.bestLength);
+          const adxVal = adxResult?.lastADX || 25;
           const chop = MarketRegimeEngine.calculateChoppinessIndex(fetched, 14);
-          const adxResult = MarketRegimeEngine.calculateADX(fetched, 14);
-          const adxVal = adxResult?.adx || 25;
           const testEngine = new AdaptiveSupertrend(10, 3.0, 85, 150, 25, 1.0, 6.0);
           const signal = testEngine.update(fetched);
           const summary = testEngine.runBacktest(fetched, {
@@ -277,7 +293,7 @@ export const AdaptiveSupertrendWorkbench: React.FC<AdaptiveSupertrendWorkbenchPr
             currentConfidence: signal?.confidence || 70,
             chopIndex: Number(chop.toFixed(1)),
             adxStrength: Number(adxVal.toFixed(1)),
-            regime: chop > 61.8 ? "CHOPPY CONSOLIDATION" : adxVal >= 25 ? "EXPANSION TREND" : "TRANSITION",
+            regime: chop > 61.8 ? "CHOPPY CONSOLIDATION" : adxVal >= tuned.bestThreshold ? `EXPANSION (ADX≥${tuned.bestThreshold})` : "TRANSITION",
             recommendedPreset: recommended,
             winRatePct: summary.winRatePct,
             profitFactor: summary.profitFactor >= 99 ? 99.9 : summary.profitFactor,
@@ -298,6 +314,7 @@ export const AdaptiveSupertrendWorkbench: React.FC<AdaptiveSupertrendWorkbenchPr
   // Live Ollama Sandbox State
   const [liveTestDecision, setLiveTestDecision] = useState<LLMDecision | null>(null);
   const [isTestingOllama, setIsTestingOllama] = useState<boolean>(false);
+  const [backtestNotice, setBacktestNotice] = useState<string | null>(null);
 
   const engine = useMemo(() => {
     return new AdaptiveSupertrend(
@@ -413,6 +430,14 @@ export const AdaptiveSupertrendWorkbench: React.FC<AdaptiveSupertrendWorkbenchPr
         const fetched = await adapter.fetchCandles(selectedSymbol, activeTf, 1000);
         if (active && fetched && fetched.length > 0) {
           setCandles(fetched);
+          const res = AutoTuningADX.calculate(fetched, adxLength);
+          setAdxSeries(res);
+          if (adxAutoMode) {
+            const tuned = AutoTuningADX.getTuned(fetched, selectedSymbol, activeTf);
+            setAdxOptResult(tuned);
+            setAdxLength(tuned.bestLength);
+            setAdxThreshold(tuned.bestThreshold);
+          }
         }
         sharedParamAdapter.reset();
         setAdaptationLog([]);
@@ -428,15 +453,57 @@ export const AdaptiveSupertrendWorkbench: React.FC<AdaptiveSupertrendWorkbenchPr
       active = false;
       sweepEpochRef.current += 1; // invalidate any in-flight sweep/LLM loop on cleanup
     };
-  }, [selectedSymbol, currentInterval, selectedInterval, adapter]);
+  }, [selectedSymbol, currentInterval, selectedInterval, adapter, adxLength, adxAutoMode]);
+
+  // Run ADX Grid Search on demand
+  const handleRunAdxOptimization = () => {
+    if (candles.length < 20) return;
+    setIsAutoTuningADX(true);
+    setTimeout(() => {
+      try {
+        const opt = AutoTuningADX.optimize(
+          candles,
+          selectedSymbol,
+          currentInterval,
+          { min: adxLengthMin, max: adxLengthMax, step: 2 },
+          { min: adxThreshMin, max: adxThreshMax, step: 2 }
+        );
+        setAdxOptResult(opt);
+        setAdxLength(opt.bestLength);
+        setAdxThreshold(opt.bestThreshold);
+        const res = AutoTuningADX.calculate(candles, opt.bestLength);
+        setAdxSeries(res);
+      } catch (e) {
+        console.error("ADX Optimization error:", e);
+      } finally {
+        setIsAutoTuningADX(false);
+      }
+    }, 50);
+  };
 
   // Run backtest whenever candles or core parameters change
-  const runBacktest = () => {
-    if (candles.length < 15) return;
+  const runBacktest = async (isManual = false) => {
+    let currentCandles = candles;
+    if (isManual && (!currentCandles || currentCandles.length < 20) && adapter) {
+      setIsLoadingCandles(true);
+      try {
+        const fresh = await adapter.fetchCandles(selectedSymbol, currentInterval, 1000);
+        if (fresh && fresh.length > 0) {
+          setCandles(fresh);
+          currentCandles = fresh;
+        }
+      } catch (err) {
+        console.warn("Manual backtest candle refresh:", err);
+      } finally {
+        setIsLoadingCandles(false);
+      }
+    }
+
+    if (!currentCandles || currentCandles.length < 15) return;
     setIsBacktesting(true);
     setTimeout(() => {
       try {
-        const res = engine.runBacktest(candles, {
+        const res = engine.runBacktest(currentCandles, {
           initialEquity,
           riskPctPerTrade: riskPct / 100,
           minConfidence,
@@ -445,6 +512,14 @@ export const AdaptiveSupertrendWorkbench: React.FC<AdaptiveSupertrendWorkbenchPr
           takeProfitR,
         });
         setBacktestResult(res);
+        if (isManual) {
+          setBacktestNotice(
+            `✨ Backtest complete: ${res.totalTrades} trades evaluated on ${currentCandles.length} bars (${selectedSymbol.toUpperCase()} ${currentInterval}) · Win Rate: ${res.winRatePct}% · Profit Factor: ${res.profitFactor} · Net: ${res.netProfitPct >= 0 ? "+" : ""}${res.netProfitPct}%`
+          );
+          if (activeTab === "docs") {
+            setActiveTab("metrics");
+          }
+        }
       } catch (e) {
         console.error("Backtest calculation error:", e);
       } finally {
@@ -455,7 +530,7 @@ export const AdaptiveSupertrendWorkbench: React.FC<AdaptiveSupertrendWorkbenchPr
 
   useEffect(() => {
     if (candles.length >= 15) {
-      runBacktest();
+      runBacktest(false);
     }
   }, [candles, atrLen, fallbackMult, percentileRank, minConfidence, initialEquity, riskPct, takeProfitR, useLlmFilter, useChopFilter, minMult, maxMult]);
 
@@ -616,7 +691,7 @@ export const AdaptiveSupertrendWorkbench: React.FC<AdaptiveSupertrendWorkbenchPr
 
           {/* Re-Run Backtest Button */}
           <button
-            onClick={runBacktest}
+            onClick={() => runBacktest(true)}
             disabled={isBacktesting || isLoadingCandles}
             style={{
               display: "flex",
@@ -638,6 +713,35 @@ export const AdaptiveSupertrendWorkbench: React.FC<AdaptiveSupertrendWorkbenchPr
           </button>
         </div>
       </div>
+
+      {/* Manual Backtest Notification Banner */}
+      {backtestNotice && (
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            padding: "10px 16px",
+            background: "linear-gradient(90deg, rgba(0, 245, 160, 0.15) 0%, rgba(0, 229, 255, 0.08) 100%)",
+            border: "1px solid rgba(0, 245, 160, 0.4)",
+            borderRadius: "6px",
+            fontSize: "12px",
+            color: "#00F5A0",
+            fontWeight: 700,
+          }}
+        >
+          <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+            <Sparkles size={16} />
+            <span>{backtestNotice}</span>
+          </div>
+          <button
+            onClick={() => setBacktestNotice(null)}
+            style={{ background: "transparent", border: "none", color: "var(--text-muted)", cursor: "pointer", fontSize: "14px", fontWeight: 700 }}
+          >
+            ✕
+          </button>
+        </div>
+      )}
 
       {/* MAIN GRID */}
       <div style={{ display: "grid", gridTemplateColumns: "320px 1fr", gap: "20px" }}>
@@ -1424,6 +1528,7 @@ export const AdaptiveSupertrendWorkbench: React.FC<AdaptiveSupertrendWorkbenchPr
               { id: "metrics",       label: "📊 PERFORMANCE",    icon: BarChart3 },
               { id: "optimizer",     label: `⚡ OPTIMIZER${optimizationCandidates.length > 0 ? ` (${optimizationCandidates.length})` : ""}`, icon: Zap },
               { id: "mtf_matrix",    label: "🌐 MTF SCANNER",    icon: TrendingUp },
+              { id: "adx_autotune",  label: `🎯 AUTO-TUNING ADX${adxOptResult ? ` (L${adxOptResult.bestLength}/T${adxOptResult.bestThreshold})` : ""}`, icon: Sliders },
               { id: "telemetry",     label: "📡 MARKET DATA",    icon: Layers },
               { id: "trades",        label: `📋 TRADES${backtestResult ? ` (${backtestResult.totalTrades})` : ""}`, icon: Terminal },
               { id: "ollama_sandbox",label: "🤖 OLLAMA LAB",     icon: Brain },
@@ -1810,6 +1915,336 @@ export const AdaptiveSupertrendWorkbench: React.FC<AdaptiveSupertrendWorkbenchPr
                   </div>
                   <div style={{ fontSize: "11px", marginTop: "4px" }}>
                     Click "⚡ SCAN ALL TIMEFRAMES" above to sweep across 1m, 3m, 5m, 15m, 30m, 1h, 4h, and 1D.
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* TAB: AUTO-TUNING ADX WORKBENCH */}
+          {activeTab === "adx_autotune" && (
+            <div style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
+              {/* 1. Header Banner & Live Gauges */}
+              <div
+                style={{
+                  background: "rgba(255, 255, 255, 0.02)",
+                  border: "1px solid rgba(255, 255, 255, 0.08)",
+                  borderRadius: "8px",
+                  padding: "16px",
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: "14px",
+                }}
+              >
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "10px" }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+                    <Sliders size={18} color="#00F5A0" />
+                    <div>
+                      <div style={{ fontSize: "14px", fontWeight: 800, color: "#FFFFFF" }}>
+                        Auto-Tuning Wilder ADX Directional Optimizer
+                      </div>
+                      <div style={{ fontSize: "11px", color: "var(--text-muted)" }}>
+                        Real-time parameter search discovering optimal Length ({adxLength}) & Threshold ({adxThreshold}) for {selectedSymbol.toUpperCase()} on {currentInterval}
+                      </div>
+                    </div>
+                  </div>
+
+                  <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                    <button
+                      onClick={() => setAdxAutoMode(!adxAutoMode)}
+                      style={{
+                        padding: "6px 12px",
+                        borderRadius: "6px",
+                        background: adxAutoMode ? "rgba(0, 245, 160, 0.15)" : "rgba(255, 255, 255, 0.05)",
+                        border: adxAutoMode ? "1px solid #00F5A0" : "1px solid rgba(255, 255, 255, 0.1)",
+                        color: adxAutoMode ? "#00F5A0" : "var(--text-secondary)",
+                        fontSize: "11px",
+                        fontWeight: 700,
+                        cursor: "pointer",
+                      }}
+                    >
+                      {adxAutoMode ? "🤖 AUTO-OPTIMIZE: ON" : "⚙️ MANUAL MODE"}
+                    </button>
+
+                    <button
+                      onClick={handleRunAdxOptimization}
+                      disabled={isAutoTuningADX || candles.length < 20}
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        gap: "6px",
+                        padding: "6px 14px",
+                        borderRadius: "6px",
+                        background: "linear-gradient(135deg, #00F5A0 0%, #00E5FF 100%)",
+                        border: "none",
+                        color: "#0A0D14",
+                        fontSize: "11px",
+                        fontWeight: 800,
+                        cursor: isAutoTuningADX ? "not-allowed" : "pointer",
+                      }}
+                    >
+                      <Zap size={13} />
+                      {isAutoTuningADX ? "OPTIMIZING..." : "RUN GRID SEARCH"}
+                    </button>
+                  </div>
+                </div>
+
+                {/* Real-time ADX & DI Gauges */}
+                {adxSeries && (
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: "10px" }}>
+                    <div style={{ background: "rgba(0,0,0,0.25)", padding: "12px", borderRadius: "6px", border: "1px solid rgba(255,255,255,0.05)" }}>
+                      <div style={{ fontSize: "10px", color: "var(--text-muted)", fontWeight: 700 }}>WILDER'S ADX</div>
+                      <div style={{ fontSize: "20px", fontWeight: 800, color: adxSeries.lastADX >= adxThreshold ? "#00F5A0" : "#FF495C", marginTop: "4px" }}>
+                        {adxSeries.lastADX}
+                      </div>
+                      <div style={{ fontSize: "10px", color: "var(--text-secondary)", marginTop: "2px" }}>
+                        Threshold: ≥{adxThreshold} ({adxSeries.lastADX >= adxThreshold ? "Strong Trend" : "Weak / Range"})
+                      </div>
+                    </div>
+
+                    <div style={{ background: "rgba(0,0,0,0.25)", padding: "12px", borderRadius: "6px", border: "1px solid rgba(255,255,255,0.05)" }}>
+                      <div style={{ fontSize: "10px", color: "var(--text-muted)", fontWeight: 700 }}>+DI (BULLISH MOMENTUM)</div>
+                      <div style={{ fontSize: "20px", fontWeight: 800, color: "#00F5A0", marginTop: "4px" }}>
+                        {adxSeries.lastPlusDI}
+                      </div>
+                      <div style={{ fontSize: "10px", color: "var(--text-secondary)", marginTop: "2px" }}>
+                        Spread: {(adxSeries.lastPlusDI - adxSeries.lastMinusDI).toFixed(1)} pts
+                      </div>
+                    </div>
+
+                    <div style={{ background: "rgba(0,0,0,0.25)", padding: "12px", borderRadius: "6px", border: "1px solid rgba(255,255,255,0.05)" }}>
+                      <div style={{ fontSize: "10px", color: "var(--text-muted)", fontWeight: 700 }}>-DI (BEARISH MOMENTUM)</div>
+                      <div style={{ fontSize: "20px", fontWeight: 800, color: "#FF495C", marginTop: "4px" }}>
+                        {adxSeries.lastMinusDI}
+                      </div>
+                      <div style={{ fontSize: "10px", color: "var(--text-secondary)", marginTop: "2px" }}>
+                        {adxSeries.lastPlusDI > adxSeries.lastMinusDI ? "Buyers Dominant" : "Sellers Dominant"}
+                      </div>
+                    </div>
+
+                    <div style={{ background: "rgba(0,0,0,0.25)", padding: "12px", borderRadius: "6px", border: "1px solid rgba(255,255,255,0.05)" }}>
+                      <div style={{ fontSize: "10px", color: "var(--text-muted)", fontWeight: 700 }}>REGIME VERDICT</div>
+                      <div style={{ fontSize: "14px", fontWeight: 800, color: adxSeries.lastADX >= adxThreshold ? "#00F5A0" : "#FFD700", marginTop: "8px" }}>
+                        {adxSeries.lastADX >= adxThreshold ? "EXPLOSIVE TREND" : "CHOPPY / TRANSITION"}
+                      </div>
+                      <div style={{ fontSize: "10px", color: "var(--text-secondary)", marginTop: "2px" }}>
+                        Length: {adxLength} bars (Tuned)
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* 2. Interactive Control Sliders */}
+              <div
+                style={{
+                  background: "rgba(255, 255, 255, 0.02)",
+                  border: "1px solid rgba(255, 255, 255, 0.08)",
+                  borderRadius: "8px",
+                  padding: "16px",
+                  display: "grid",
+                  gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))",
+                  gap: "14px",
+                }}
+              >
+                <div>
+                  <div style={{ display: "flex", justifyContent: "space-between", fontSize: "11px", marginBottom: "6px" }}>
+                    <span style={{ color: "var(--text-muted)" }}>ADX Length</span>
+                    <b style={{ color: "#00F5A0" }}>{adxLength} bars</b>
+                  </div>
+                  <input
+                    type="range"
+                    min="7"
+                    max="28"
+                    step="1"
+                    value={adxLength}
+                    onChange={(e) => {
+                      const l = Number(e.target.value);
+                      setAdxLength(l);
+                      if (candles.length > 0) setAdxSeries(AutoTuningADX.calculate(candles, l));
+                    }}
+                    style={{ width: "100%", accentColor: "#00F5A0" }}
+                  />
+                </div>
+
+                <div>
+                  <div style={{ display: "flex", justifyContent: "space-between", fontSize: "11px", marginBottom: "6px" }}>
+                    <span style={{ color: "var(--text-muted)" }}>Trend Threshold</span>
+                    <b style={{ color: "#00E5FF" }}>{adxThreshold}</b>
+                  </div>
+                  <input
+                    type="range"
+                    min="15"
+                    max="40"
+                    step="1"
+                    value={adxThreshold}
+                    onChange={(e) => setAdxThreshold(Number(e.target.value))}
+                    style={{ width: "100%", accentColor: "#00E5FF" }}
+                  />
+                </div>
+
+                <div>
+                  <div style={{ display: "flex", justifyContent: "space-between", fontSize: "11px", marginBottom: "6px" }}>
+                    <span style={{ color: "var(--text-muted)" }}>Grid Search Length Range</span>
+                    <span style={{ color: "var(--text-secondary)" }}>{adxLengthMin} – {adxLengthMax}</span>
+                  </div>
+                  <div style={{ display: "flex", gap: "8px" }}>
+                    <input
+                      type="number"
+                      value={adxLengthMin}
+                      onChange={(e) => setAdxLengthMin(Number(e.target.value))}
+                      style={{ width: "100%", background: "rgba(0,0,0,0.3)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: "4px", color: "white", padding: "4px 8px", fontSize: "11px" }}
+                    />
+                    <input
+                      type="number"
+                      value={adxLengthMax}
+                      onChange={(e) => setAdxLengthMax(Number(e.target.value))}
+                      style={{ width: "100%", background: "rgba(0,0,0,0.3)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: "4px", color: "white", padding: "4px 8px", fontSize: "11px" }}
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <div style={{ display: "flex", justifyContent: "space-between", fontSize: "11px", marginBottom: "6px" }}>
+                    <span style={{ color: "var(--text-muted)" }}>Grid Search Threshold Range</span>
+                    <span style={{ color: "var(--text-secondary)" }}>{adxThreshMin} – {adxThreshMax}</span>
+                  </div>
+                  <div style={{ display: "flex", gap: "8px" }}>
+                    <input
+                      type="number"
+                      value={adxThreshMin}
+                      onChange={(e) => setAdxThreshMin(Number(e.target.value))}
+                      style={{ width: "100%", background: "rgba(0,0,0,0.3)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: "4px", color: "white", padding: "4px 8px", fontSize: "11px" }}
+                    />
+                    <input
+                      type="number"
+                      value={adxThreshMax}
+                      onChange={(e) => setAdxThreshMax(Number(e.target.value))}
+                      style={{ width: "100%", background: "rgba(0,0,0,0.3)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: "4px", color: "white", padding: "4px 8px", fontSize: "11px" }}
+                    />
+                  </div>
+                </div>
+              </div>
+
+              {/* 3. Optimal Backtest Result Card & Ranking Table */}
+              {adxOptResult && (
+                <div
+                  style={{
+                    background: "rgba(255, 255, 255, 0.02)",
+                    border: "1px solid rgba(255, 255, 255, 0.08)",
+                    borderRadius: "8px",
+                    padding: "16px",
+                    display: "flex",
+                    flexDirection: "column",
+                    gap: "12px",
+                  }}
+                >
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                    <div style={{ fontSize: "13px", fontWeight: 800, color: "#00F5A0" }}>
+                      🏆 Optimal ADX Configuration Discovered
+                    </div>
+                    <div style={{ fontSize: "11px", color: "var(--text-muted)" }}>
+                      Fitness Score: <b style={{ color: "#FFFFFF" }}>{adxOptResult.bestScore}</b> (Tested {adxOptResult.allResults.length} parameter pairs)
+                    </div>
+                  </div>
+
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(130px, 1fr))", gap: "10px" }}>
+                    <div style={{ background: "rgba(0, 245, 160, 0.08)", border: "1px solid rgba(0, 245, 160, 0.2)", padding: "10px", borderRadius: "6px" }}>
+                      <div style={{ fontSize: "10px", color: "var(--text-muted)" }}>BEST LENGTH</div>
+                      <div style={{ fontSize: "18px", fontWeight: 800, color: "#00F5A0" }}>{adxOptResult.bestLength}</div>
+                    </div>
+                    <div style={{ background: "rgba(0, 229, 255, 0.08)", border: "1px solid rgba(0, 229, 255, 0.2)", padding: "10px", borderRadius: "6px" }}>
+                      <div style={{ fontSize: "10px", color: "var(--text-muted)" }}>BEST THRESHOLD</div>
+                      <div style={{ fontSize: "18px", fontWeight: 800, color: "#00E5FF" }}>{adxOptResult.bestThreshold}</div>
+                    </div>
+                    <div style={{ background: "rgba(255, 255, 255, 0.04)", border: "1px solid rgba(255, 255, 255, 0.08)", padding: "10px", borderRadius: "6px" }}>
+                      <div style={{ fontSize: "10px", color: "var(--text-muted)" }}>WIN RATE</div>
+                      <div style={{ fontSize: "18px", fontWeight: 800, color: "#FFFFFF" }}>{adxOptResult.bestResult.winRate}%</div>
+                    </div>
+                    <div style={{ background: "rgba(255, 255, 255, 0.04)", border: "1px solid rgba(255, 255, 255, 0.08)", padding: "10px", borderRadius: "6px" }}>
+                      <div style={{ fontSize: "10px", color: "var(--text-muted)" }}>PROFIT FACTOR</div>
+                      <div style={{ fontSize: "18px", fontWeight: 800, color: "#FFD700" }}>{adxOptResult.bestResult.profitFactor}</div>
+                    </div>
+                    <div style={{ background: "rgba(255, 255, 255, 0.04)", border: "1px solid rgba(255, 255, 255, 0.08)", padding: "10px", borderRadius: "6px" }}>
+                      <div style={{ fontSize: "10px", color: "var(--text-muted)" }}>NET RETURN</div>
+                      <div style={{ fontSize: "18px", fontWeight: 800, color: adxOptResult.bestResult.netProfitPct >= 0 ? "#00F5A0" : "#FF495C" }}>
+                        {adxOptResult.bestResult.netProfitPct >= 0 ? "+" : ""}{adxOptResult.bestResult.netProfitPct}%
+                      </div>
+                    </div>
+                    <div style={{ background: "rgba(255, 255, 255, 0.04)", border: "1px solid rgba(255, 255, 255, 0.08)", padding: "10px", borderRadius: "6px" }}>
+                      <div style={{ fontSize: "10px", color: "var(--text-muted)" }}>MAX DRAWDOWN</div>
+                      <div style={{ fontSize: "18px", fontWeight: 800, color: "#FF495C" }}>-{adxOptResult.bestResult.maxDrawdownPct}%</div>
+                    </div>
+                  </div>
+
+                  {/* All Candidates Table */}
+                  <div style={{ marginTop: "10px", overflowX: "auto" }}>
+                    <div style={{ fontSize: "12px", fontWeight: 700, marginBottom: "8px", color: "var(--text-secondary)" }}>
+                      Top Ranked ADX Parameter Combinations
+                    </div>
+                    <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "11px", textAlign: "left" }}>
+                      <thead>
+                        <tr style={{ borderBottom: "1px solid rgba(255,255,255,0.1)", color: "var(--text-muted)" }}>
+                          <th style={{ padding: "8px" }}>RANK</th>
+                          <th style={{ padding: "8px" }}>LENGTH</th>
+                          <th style={{ padding: "8px" }}>THRESHOLD</th>
+                          <th style={{ padding: "8px" }}>FITNESS SCORE</th>
+                          <th style={{ padding: "8px" }}>WIN RATE</th>
+                          <th style={{ padding: "8px" }}>PROFIT FACTOR</th>
+                          <th style={{ padding: "8px" }}>NET PROFIT</th>
+                          <th style={{ padding: "8px" }}>TRADES</th>
+                          <th style={{ padding: "8px", textAlign: "right" }}>ACTION</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {adxOptResult.allResults.slice(0, 8).map((cand: ADXCandidateResult, idx: number) => {
+                          const isTop = idx === 0;
+                          return (
+                            <tr
+                              key={`${cand.length}_${cand.threshold}`}
+                              style={{
+                                borderBottom: "1px solid rgba(255,255,255,0.04)",
+                                background: isTop ? "rgba(0, 245, 160, 0.05)" : "transparent",
+                              }}
+                            >
+                              <td style={{ padding: "8px", fontWeight: 700 }}>
+                                {idx === 0 ? "🥇 #1" : idx === 1 ? "🥈 #2" : idx === 2 ? "🥉 #3" : `#${idx + 1}`}
+                              </td>
+                              <td style={{ padding: "8px", fontWeight: 700, color: "#00F5A0" }}>{cand.length} bars</td>
+                              <td style={{ padding: "8px", fontWeight: 700, color: "#00E5FF" }}>≥{cand.threshold}</td>
+                              <td style={{ padding: "8px", fontWeight: 800, color: "#FFFFFF" }}>{cand.score}</td>
+                              <td style={{ padding: "8px", color: cand.winRate >= 55 ? "#00F5A0" : "inherit" }}>{cand.winRate}%</td>
+                              <td style={{ padding: "8px", color: "#FFD700", fontWeight: 700 }}>{cand.profitFactor.toFixed(2)}</td>
+                              <td style={{ padding: "8px", color: cand.netProfitPct >= 0 ? "#00F5A0" : "#FF495C", fontWeight: 700 }}>
+                                {cand.netProfitPct >= 0 ? "+" : ""}{cand.netProfitPct}%
+                              </td>
+                              <td style={{ padding: "8px", color: "var(--text-muted)" }}>{cand.totalTrades}</td>
+                              <td style={{ padding: "8px", textAlign: "right" }}>
+                                <button
+                                  onClick={() => {
+                                    setAdxLength(cand.length);
+                                    setAdxThreshold(cand.threshold);
+                                    if (candles.length > 0) setAdxSeries(AutoTuningADX.calculate(candles, cand.length));
+                                  }}
+                                  style={{
+                                    padding: "4px 8px",
+                                    borderRadius: "4px",
+                                    background: "rgba(255,255,255,0.08)",
+                                    border: "1px solid rgba(255,255,255,0.15)",
+                                    color: "white",
+                                    fontSize: "10px",
+                                    fontWeight: 700,
+                                    cursor: "pointer",
+                                  }}
+                                >
+                                  Apply Preset
+                                </button>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
                   </div>
                 </div>
               )}

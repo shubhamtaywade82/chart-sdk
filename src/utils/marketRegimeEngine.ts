@@ -6,6 +6,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 import type { Candle } from "../adapters/IDataAdapter";
+import { AutoTuningADX, ADXSeriesResult } from "./autoTuningADX";
 
 export type MarketRegimeType = "TRENDING_EXPANSION" | "CHOPPY_COMPRESSION" | "VOLATILITY_SQUEEZE" | "TRANSITION";
 export type MacroBias = "STRONG_BULLISH" | "LEAN_BULLISH" | "NEUTRAL_CHOP" | "LEAN_BEARISH" | "STRONG_BEARISH";
@@ -22,6 +23,9 @@ export interface MarketRegimeTelemetry {
   isSqueezeActive: boolean; // Bollinger Bands compressed inside Keltner Channel
   canExecuteTrendTrade: boolean;
   regimeMessage: string;
+  adxLength?: number;
+  adxThreshold?: number;
+  isAutoTuned?: boolean;
 }
 
 export class MarketRegimeEngine {
@@ -60,67 +64,25 @@ export class MarketRegimeEngine {
   }
 
   /**
-   * Calculates Wilder's ADX (Average Directional Index) and +DI / -DI lines.
+   * Calculates Wilder's ADX (Average Directional Index) and +DI / -DI lines with optional auto-tuning.
    */
-  public static calculateADX(candles: Candle[], length: number = 14): { adx: number; plusDI: number; minusDI: number } {
-    if (!candles || candles.length < length * 2) {
-      return { adx: 22, plusDI: 20, minusDI: 20 };
-    }
-
-    const trArr: number[] = [];
-    const plusDMArr: number[] = [];
-    const minusDMArr: number[] = [];
-
-    for (let i = 1; i < candles.length; i++) {
-      const curr = candles[i];
-      const prev = candles[i - 1];
-
-      const tr = Math.max(
-        curr.high - curr.low,
-        Math.abs(curr.high - prev.close),
-        Math.abs(curr.low - prev.close)
-      );
-      trArr.push(tr);
-
-      const upMove = curr.high - prev.high;
-      const downMove = prev.low - curr.low;
-
-      plusDMArr.push(upMove > downMove && upMove > 0 ? upMove : 0);
-      minusDMArr.push(downMove > upMove && downMove > 0 ? downMove : 0);
-    }
-
-    // Smoothed sums
-    let smoothTR = trArr.slice(0, length).reduce((a, b) => a + b, 0);
-    let smoothPlusDM = plusDMArr.slice(0, length).reduce((a, b) => a + b, 0);
-    let smoothMinusDM = minusDMArr.slice(0, length).reduce((a, b) => a + b, 0);
-
-    const dxArr: number[] = [];
-
-    for (let i = length; i < trArr.length; i++) {
-      smoothTR = smoothTR - smoothTR / length + trArr[i];
-      smoothPlusDM = smoothPlusDM - smoothPlusDM / length + plusDMArr[i];
-      smoothMinusDM = smoothMinusDM - smoothMinusDM / length + minusDMArr[i];
-
-      const plusDI = smoothTR > 0 ? (smoothPlusDM / smoothTR) * 100 : 0;
-      const minusDI = smoothTR > 0 ? (smoothMinusDM / smoothTR) * 100 : 0;
-      const diSum = plusDI + minusDI;
-      const dx = diSum > 0 ? (Math.abs(plusDI - minusDI) / diSum) * 100 : 0;
-      dxArr.push(dx);
-    }
-
-    if (dxArr.length < length) {
-      return { adx: 22, plusDI: 20, minusDI: 20 };
-    }
-
-    const adx = dxArr.slice(-length).reduce((a, b) => a + b, 0) / length;
-    const lastPlusDI = smoothTR > 0 ? (smoothPlusDM / smoothTR) * 100 : 0;
-    const lastMinusDI = smoothTR > 0 ? (smoothMinusDM / smoothTR) * 100 : 0;
-
+  public static calculateADX(
+    candles: Candle[],
+    length: number = 14
+  ): { adx: number; plusDI: number; minusDI: number } {
+    const res = AutoTuningADX.calculate(candles, length);
     return {
-      adx: Number(adx.toFixed(1)),
-      plusDI: Number(lastPlusDI.toFixed(1)),
-      minusDI: Number(lastMinusDI.toFixed(1)),
+      adx: res.lastADX,
+      plusDI: res.lastPlusDI,
+      minusDI: res.lastMinusDI,
     };
+  }
+
+  /**
+   * Returns full time-series arrays of Wilder's ADX for charting.
+   */
+  public static calculateADXSeries(candles: Candle[], length: number = 14): ADXSeriesResult {
+    return AutoTuningADX.calculate(candles, length);
   }
 
   /**
@@ -132,7 +94,7 @@ export class MarketRegimeEngine {
     const closes = candles.map((c) => c.close);
     const lastPrice = closes[closes.length - 1];
 
-    const ema20 = this.calcEMA(closes, 20);
+    const ema20 = MarketRegimeEngine.calcEMA(closes, 20);
     const sma50 = closes.slice(-50).reduce((a, b) => a + b, 0) / 50;
     const sma200 = candles.length >= 200 ? closes.slice(-200).reduce((a, b) => a + b, 0) / 200 : sma50;
 
@@ -192,10 +154,17 @@ export class MarketRegimeEngine {
   }
 
   /**
-   * Synthesizes all regime metrics into a unified verdict.
+   * Synthesizes all regime metrics into a unified verdict with auto-tunable ADX length & threshold.
    */
-  public static evaluateMarketRegime(candles: Candle[]): MarketRegimeTelemetry {
-    if (!candles || candles.length < 15) {
+  public static evaluateMarketRegime(
+    candles: Candle[],
+    tunedParams?: { length?: number; threshold?: number }
+  ): MarketRegimeTelemetry {
+    const adxLength = tunedParams?.length ?? 14;
+    const adxThreshold = tunedParams?.threshold ?? 25;
+    const isAutoTuned = Boolean(tunedParams?.length || tunedParams?.threshold);
+
+    if (!candles || candles.length < Math.max(15, adxLength + 2)) {
       return {
         regime: "TRANSITION",
         chopIndex: 50,
@@ -208,16 +177,19 @@ export class MarketRegimeEngine {
         isSqueezeActive: false,
         canExecuteTrendTrade: true,
         regimeMessage: "Insufficient history for regime calibration.",
+        adxLength,
+        adxThreshold,
+        isAutoTuned,
       };
     }
 
-    const chopIndex = this.calculateChoppinessIndex(candles, 14);
-    const { adx, plusDI, minusDI } = this.calculateADX(candles, 14);
-    const { bias: macroBias, alignmentScore: htfAlignmentScore } = this.calculateMacroBias(candles);
-    const isSqueezeActive = this.detectVolatilitySqueeze(candles, 20);
+    const chopIndex = MarketRegimeEngine.calculateChoppinessIndex(candles, 14);
+    const { adx, plusDI, minusDI } = MarketRegimeEngine.calculateADX(candles, adxLength);
+    const { bias: macroBias, alignmentScore: htfAlignmentScore } = MarketRegimeEngine.calculateMacroBias(candles);
+    const isSqueezeActive = MarketRegimeEngine.detectVolatilitySqueeze(candles, 20);
 
     const isHighChop = chopIndex >= 61.8;
-    const isWeakTrend = adx < 20;
+    const isWeakTrend = adx < adxThreshold - 5;
     const isChop = isHighChop || isWeakTrend;
 
     let regime: MarketRegimeType = "TRANSITION";
@@ -235,11 +207,11 @@ export class MarketRegimeEngine {
     } else if (isWeakTrend) {
       regime = "CHOPPY_COMPRESSION";
       canExecuteTrendTrade = false;
-      regimeMessage = `Weak Trend Strength (ADX ${adx} < 20): Directional momentum absent. Stand aside.`;
-    } else if (chopIndex <= 38.2 && adx >= 25) {
+      regimeMessage = `Weak Trend Strength (ADX ${adx} < ${adxThreshold - 5}): Directional momentum absent. Stand aside.`;
+    } else if (chopIndex <= 38.2 && adx >= adxThreshold) {
       regime = "TRENDING_EXPANSION";
       canExecuteTrendTrade = true;
-      regimeMessage = `Explosive Trending Regime (CHOP ${chopIndex} < 38.2, ADX ${adx} > 25): Prime execution state.`;
+      regimeMessage = `Explosive Trending Regime (CHOP ${chopIndex} < 38.2, ADX ${adx} ≥ ${adxThreshold}): Prime execution state.`;
     } else {
       regime = "TRANSITION";
       canExecuteTrendTrade = true;
@@ -258,6 +230,9 @@ export class MarketRegimeEngine {
       isSqueezeActive,
       canExecuteTrendTrade,
       regimeMessage,
+      adxLength,
+      adxThreshold,
+      isAutoTuned,
     };
   }
 

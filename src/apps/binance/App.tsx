@@ -738,7 +738,7 @@ export function App() {
 
           {/* TAB 3: FUTURES BACKTEST WORKBENCH */}
           {activeTab === "backtest" && (
-            <FuturesBacktestWorkbench symbol={selectedSymbol} />
+            <FuturesBacktestWorkbench symbol={selectedSymbol} adapter={adapterInstance} />
           )}
 
           {/* TAB 3: FUTURES MARKET INTEL & OPEN INTEREST */}

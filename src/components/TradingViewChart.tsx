@@ -3755,8 +3755,8 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
                   CHOP: {regime.chopIndex} {regime.chopIndex >= 61.8 ? "(HIGH CHOP)" : regime.chopIndex <= 38.2 ? "(TRENDING)" : ""}
                 </span>
                 <span style={{ color: "var(--text-muted)", fontWeight: 500 }}>·</span>
-                <span style={{ color: regime.adx >= 25 ? "#00F5A0" : "#FF495C" }}>
-                  ADX: {regime.adx}
+                <span style={{ color: regime.adx >= (regime.adxThreshold || 25) ? "#00F5A0" : "#FF495C" }}>
+                  ADX: {regime.adx} {regime.adx >= (regime.adxThreshold || 25) ? `(≥${regime.adxThreshold || 25} Trend)` : `(<${regime.adxThreshold || 25} Weak)`}
                 </span>
                 <span style={{ color: "var(--text-muted)", fontWeight: 500 }}>·</span>
                 <span style={{ color: "var(--text-secondary)", fontFamily: "monospace" }}>

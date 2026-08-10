@@ -239,9 +239,10 @@ export class MarketDataConsensusEngine {
 
     // --- VECTOR 6: Choppiness Index (CHOP) & Market Regime Filter (25 pts) ---
     if (telemetry.regime) {
-      if (telemetry.regime.chopIndex <= 38.2 && telemetry.regime.adx >= 25) {
+      const adxThresh = telemetry.regime.adxThreshold || 25;
+      if (telemetry.regime.chopIndex <= 38.2 && telemetry.regime.adx >= adxThresh) {
         score += 15;
-        reasonsToTake.push(`Explosive Trending Regime (CHOP ${telemetry.regime.chopIndex} < 38.2, ADX ${telemetry.regime.adx} > 25)`);
+        reasonsToTake.push(`Explosive Trending Regime (CHOP ${telemetry.regime.chopIndex} < 38.2, ADX ${telemetry.regime.adx} ≥ ${adxThresh})`);
       } else if (telemetry.regime.isChop || telemetry.regime.chopIndex >= 61.8) {
         score -= 30; // Severe penalty for chop!
         reasonsToAvoid.push(`High Choppiness Detected (CHOP ${telemetry.regime.chopIndex} > 61.8) — High whip-saw probability; stand aside`);
