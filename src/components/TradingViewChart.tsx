@@ -69,6 +69,8 @@ import {
 import { scanSetups, resampleCandles, SetupSignal, HtfBias } from "../utils/setupScanner";
 import { ADXLiveTuner, ADX_THEMES, ADXTheme } from "./ADXLiveTuner";
 import { AutoTuningADX } from "../utils/autoTuningADX";
+import { RiftDashboard } from "./RiftDashboard";
+import { runRiftAnalysis } from "../utils/riftPaper";
 import {
   PaperAccount,
   createPaperAccount,
@@ -946,13 +948,31 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
     return () => window.removeEventListener("chart:apply_adx_tuner", onApplyADX);
   }, [symbol, interval]);
 
+  // Rift Engine [Rampage Series] (Volume & Structure, POV, 3 Hunts, Frozen Trade Boxes)
+  const [showRift, setShowRift] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem("chart_show_rift") === "true";
+    } catch {}
+    return false;
+  });
+
+  const toggleRift = () => {
+    setShowRift((prev) => {
+      const next = !prev;
+      try { localStorage.setItem("chart_show_rift", String(next)); } catch {}
+      scheduleDraw();
+      return next;
+    });
+  };
+
   // Immediate repaint on any indicator toggle change
   useEffect(() => {
     scheduleDraw();
   }, [
     showFVG, showOB, showStructure, showLiquidity, showEquilibrium,
     showICTSessions, showSilverBullet, showOTE, showJudas, showAMD,
-    showSD, showTL, showCP, showVolumeProfile, showAdaptiveSupertrend
+    showSD, showTL, showCP, showVolumeProfile, showAdaptiveSupertrend,
+    showRift
   ]);
 
   // Futures Setup Scanner State (persisted to localStorage)
@@ -1102,10 +1122,11 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
     volumeProfile: { label: "Volume Profile (VPVR, POC, VAH, VAL)", color: "#FFD700", get: () => showVolumeProfile, set: (v) => { persistIndicator("chart_show_volume_profile", v); setShowVolumeProfile(v); } },
     adaptiveSupertrend: { label: "Adaptive Supertrend (AI-KNN)", color: "#00F5A0", icon: "🤖", get: () => showAdaptiveSupertrend, set: (v) => { persistIndicator("chart_show_adaptive_supertrend", v); setShowAdaptiveSupertrend(v); } },
     adxTuner: { label: "ADX Live Tuner (Wilder Smoothed)", color: "#00E5FF", icon: "🎯", get: () => showADXTuner, set: (v) => { try { localStorage.setItem("chart_show_adx_tuner", String(v)); } catch {} setShowADXTuner(v); } },
+    rift: { label: "Rift Profile & Hunt Engine [Rampage]", color: "#00E5FF", icon: "⚡", get: () => showRift, set: (v) => { try { localStorage.setItem("chart_show_rift", String(v)); } catch {} setShowRift(v); scheduleDraw(); } },
   };
 
   const INDICATOR_SETS: IndicatorSetDef[] = [
-    { id: "ai", label: "AI & ADAPTIVE SYSTEMS", keys: ["adaptiveSupertrend", "adxTuner"] },
+    { id: "ai", label: "AI & ADAPTIVE SYSTEMS", keys: ["adaptiveSupertrend", "adxTuner", "rift"] },
     { id: "ma", label: "MOVING AVERAGES", keys: ["sma20", "ema9"] },
     { id: "smc", label: "SMART MONEY CONCEPTS (SMC)", keys: ["fvg", "ob", "structure", "liquidity", "equilibrium", "volumeProfile"] },
     { id: "ict", label: "ICT", keys: ["ictSessions", "silverBullet", "ote", "judas", "amd"] },
@@ -2381,6 +2402,144 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
 
           ctx.restore();
         }
+      } catch (e) {}
+    }
+
+    // 16. Render Rift [Rampage Series] Levels & Trade Boxes
+    if (showRift && allCandlesRef.current.length > 5) {
+      try {
+        const riftRes = runRiftAnalysis(allCandlesRef.current, symbol);
+        const { stats, tradeBoxes } = riftRes;
+
+        if (stats) {
+          // Point of Control (POC - Gold)
+          const pocY = series.priceToCoordinate(stats.poc);
+          if (pocY !== null && !isNaN(pocY)) {
+            ctx.strokeStyle = "#FFD700";
+            ctx.lineWidth = 1.5;
+            ctx.setLineDash([]);
+            ctx.beginPath();
+            ctx.moveTo(4, pocY);
+            ctx.lineTo(width - 60, pocY);
+            ctx.stroke();
+
+            ctx.fillStyle = "#FFD700";
+            ctx.font = "bold 9px monospace";
+            ctx.textAlign = "left";
+            ctx.fillText(`POC $${stats.poc.toFixed(2)}`, 10, pocY - 3);
+          }
+
+          // Point of Void (POV - The Rift - Orange)
+          if (stats.pov) {
+            const povY = series.priceToCoordinate(stats.pov);
+            if (povY !== null && !isNaN(povY)) {
+              ctx.strokeStyle = "#FF8C00";
+              ctx.lineWidth = 1.5;
+              ctx.setLineDash([4, 4]);
+              ctx.beginPath();
+              ctx.moveTo(4, povY);
+              ctx.lineTo(width - 60, povY);
+              ctx.stroke();
+              ctx.setLineDash([]);
+
+              ctx.fillStyle = "#FF8C00";
+              ctx.font = "bold 9px monospace";
+              ctx.textAlign = "left";
+              ctx.fillText(`POV (THE RIFT) $${stats.pov.toFixed(2)}`, 10, povY - 3);
+            }
+          }
+
+          // Value Area High (VAH) & Value Area Low (VAL)
+          const vahY = series.priceToCoordinate(stats.vah);
+          if (vahY !== null && !isNaN(vahY)) {
+            ctx.strokeStyle = "#00E5FF";
+            ctx.lineWidth = 1;
+            ctx.setLineDash([2, 2]);
+            ctx.beginPath();
+            ctx.moveTo(4, vahY);
+            ctx.lineTo(width - 60, vahY);
+            ctx.stroke();
+            ctx.setLineDash([]);
+          }
+
+          const valY = series.priceToCoordinate(stats.val);
+          if (valY !== null && !isNaN(valY)) {
+            ctx.strokeStyle = "#FF495C";
+            ctx.lineWidth = 1;
+            ctx.setLineDash([2, 2]);
+            ctx.beginPath();
+            ctx.moveTo(4, valY);
+            ctx.lineTo(width - 60, valY);
+            ctx.stroke();
+            ctx.setLineDash([]);
+          }
+        }
+
+        // Draw Active & Frozen Trade Boxes
+        tradeBoxes.slice(-10).forEach((box) => {
+          const entryX = timeScale.timeToCoordinate(box.entryTime as any);
+          const lastCandle = allCandlesRef.current[allCandlesRef.current.length - 1];
+          const exitTime = box.exitTime || (lastCandle ? lastCandle.time : box.entryTime);
+          const exitX = timeScale.timeToCoordinate(exitTime as any) || entryX;
+
+          const entryY = series.priceToCoordinate(box.entryPrice);
+          const stopY = series.priceToCoordinate(box.stopPrice);
+          const targetY = series.priceToCoordinate(box.targetPrice);
+
+          if (
+            entryX !== null && !isNaN(entryX) &&
+            exitX !== null && !isNaN(exitX) &&
+            entryY !== null && !isNaN(entryY) &&
+            stopY !== null && !isNaN(stopY) &&
+            targetY !== null && !isNaN(targetY)
+          ) {
+            const minX = Math.min(entryX, exitX);
+            const boxW = Math.max(16, Math.abs(exitX - entryX));
+
+            // Green Reward Box
+            const topRewardY = Math.min(entryY, targetY);
+            const rewardH = Math.abs(targetY - entryY);
+            ctx.fillStyle = "rgba(0, 245, 160, 0.12)";
+            ctx.fillRect(minX, topRewardY, boxW, rewardH);
+
+            // Red Risk Box
+            const topRiskY = Math.min(entryY, stopY);
+            const riskH = Math.abs(stopY - entryY);
+            ctx.fillStyle = "rgba(255, 73, 92, 0.12)";
+            ctx.fillRect(minX, topRiskY, boxW, riskH);
+
+            // Target Line (Solid Green)
+            ctx.strokeStyle = "#00F5A0";
+            ctx.lineWidth = 1.5;
+            ctx.beginPath();
+            ctx.moveTo(minX, targetY);
+            ctx.lineTo(minX + boxW, targetY);
+            ctx.stroke();
+
+            // Stop Line (Dashed Red)
+            ctx.strokeStyle = "#FF495C";
+            ctx.lineWidth = 1.5;
+            ctx.setLineDash([3, 3]);
+            ctx.beginPath();
+            ctx.moveTo(minX, stopY);
+            ctx.lineTo(minX + boxW, stopY);
+            ctx.stroke();
+            ctx.setLineDash([]);
+
+            // Freeze Tag Pill
+            if (box.state !== "ACTIVE") {
+              const isTp = box.state === "TP_HIT";
+              const tagText = isTp ? "TP HIT" : box.state === "SL_HIT" ? "SL HIT" : "CLOSED";
+
+              ctx.fillStyle = isTp ? "rgba(0, 245, 160, 0.85)" : "rgba(255, 73, 92, 0.85)";
+              ctx.fillRect(minX + boxW - 20, isTp ? targetY - 14 : stopY - 14, 40, 12);
+              ctx.fillStyle = "#0A0D14";
+              ctx.font = "bold 8px monospace";
+              ctx.textAlign = "center";
+              ctx.fillText(tagText, minX + boxW, isTp ? targetY - 5 : stopY - 5);
+            }
+          }
+        });
       } catch (e) {}
     }
   };
@@ -3780,6 +3939,28 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
             <span>ADX TUNER</span>
           </button>
 
+          {/* Quick Rift Engine Toggle */}
+          <button
+            onClick={toggleRift}
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: "4px",
+              background: showRift ? "rgba(0, 229, 255, 0.2)" : "rgba(255, 255, 255, 0.06)",
+              color: showRift ? "#00E5FF" : "var(--text-muted)",
+              border: showRift ? "1px solid #00E5FF" : "1px solid rgba(255, 255, 255, 0.15)",
+              padding: "2px 8px",
+              borderRadius: "4px",
+              fontSize: "11px",
+              fontWeight: 700,
+              cursor: "pointer",
+              transition: "all 0.2s ease",
+            }}
+          >
+            <span>⚡</span>
+            <span>RIFT</span>
+          </button>
+
           <span style={{ color: "rgba(255, 255, 255, 0.2)" }}>•</span>
 
           {/* GROUP 1: MOVING AVERAGES */}
@@ -4321,6 +4502,20 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
           onClose={() => {
             try { localStorage.setItem("chart_show_adx_tuner", "false"); } catch {}
             setShowADXTuner(false);
+          }}
+        />
+      )}
+
+      {/* Floating Rift Engine Dashboard */}
+      {showRift && (
+        <RiftDashboard
+          candles={allCandlesRef.current}
+          symbol={symbol}
+          interval={interval}
+          onClose={() => {
+            try { localStorage.setItem("chart_show_rift", "false"); } catch {}
+            setShowRift(false);
+            scheduleDraw();
           }}
         />
       )}
