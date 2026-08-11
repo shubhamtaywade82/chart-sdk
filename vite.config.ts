@@ -9,6 +9,7 @@ export default defineConfig(({ mode }) => {
   const backendPorts: Record<string, number> = {
     binance: 3002,
     dhanhq:  3003,
+    coindcx: 3004,
   };
   const backendPort = backendPorts[app] ?? 3002;
 
@@ -28,7 +29,7 @@ export default defineConfig(({ mode }) => {
     },
 
     server: {
-      port: app === "dhanhq" ? 5201 : 5200,
+      port: app === "dhanhq" ? 5201 : app === "coindcx" ? 5202 : 5200,
       proxy: {
         // Each app's /api and /ws routed to its own backend
         "/api/binance": {
@@ -40,6 +41,11 @@ export default defineConfig(({ mode }) => {
           target: `http://localhost:3003`,
           changeOrigin: true,
           rewrite: (p) => p.replace(/^\/api\/dhanhq/, "/api"),
+        },
+        "/api/coindcx": {
+          target: `http://localhost:3004`,
+          changeOrigin: true,
+          rewrite: (p) => p.replace(/^\/api\/coindcx/, "/api"),
         },
         // Legacy /api pass-through for whichever app is active
         "/api": {
@@ -55,6 +61,11 @@ export default defineConfig(({ mode }) => {
           target: `ws://localhost:3003`,
           ws: true,
           rewrite: (p) => p.replace(/^\/ws\/dhanhq/, "/ws"),
+        },
+        "/ws/coindcx": {
+          target: `ws://localhost:3004`,
+          ws: true,
+          rewrite: (p) => p.replace(/^\/ws\/coindcx/, "/ws"),
         },
         "/ws": {
           target: `ws://localhost:${backendPort}`,

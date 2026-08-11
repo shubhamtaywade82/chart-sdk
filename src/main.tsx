@@ -10,12 +10,19 @@ async function bootstrap() {
   const appId = typeof __VITE_APP__ !== "undefined" ? __VITE_APP__ : "binance";
 
   // Set document title per app so DhanHQ tab doesn't show Binance branding
-  document.title = appId === "dhanhq" ? "DhanHQ Pro Trading Terminal" : "Binance Charts Pro Trading Terminal";
+  document.title = appId === "dhanhq"
+    ? "DhanHQ Pro Trading Terminal"
+    : appId === "coindcx"
+      ? "CoinDCX Pro Trading Terminal"
+      : "Binance Charts Pro Trading Terminal";
 
   let AppComponent: React.ComponentType;
 
   if (appId === "dhanhq") {
     const mod = await import("./apps/dhanhq/App");
+    AppComponent = mod.default ?? mod.App;
+  } else if (appId === "coindcx") {
+    const mod = await import("./apps/coindcx/App");
     AppComponent = mod.default ?? mod.App;
   } else {
     const mod = await import("./apps/binance/App");

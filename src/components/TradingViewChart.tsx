@@ -216,6 +216,7 @@ export interface ChartProps {
   livePrice?: number;
   customCandles?: any[];
   tick?: any;
+  positions?: any[];  // real broker positions — drawn as entry/SL/TP price lines (supersedes paper position lines)
 }
 
 export interface IndicatorMeta {
@@ -342,7 +343,7 @@ const DEFAULT_SCALE_SETTINGS: ChartScaleSettings = {
 };
 
 export const TradingViewChart: React.FC<ChartProps> = (props) => {
-  const { adapter, symbol, interval, showIndicators = true, livePrice, customCandles, tick } = props;
+  const { adapter, symbol, interval, showIndicators = true, livePrice, customCandles, tick, positions } = props;
   const chartContainerRef = useRef<HTMLDivElement>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isLazyLoading, setIsLazyLoading] = useState(false);
@@ -529,6 +530,9 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
   const posEntryLineRef = useRef<IPriceLine | null>(null);
   const posStopLineRef = useRef<IPriceLine | null>(null);
   const posTargetLineRef = useRef<IPriceLine | null>(null);
+  const realPosEntryLineRef = useRef<IPriceLine | null>(null);
+  const realPosStopLineRef = useRef<IPriceLine | null>(null);
+  const realPosTargetLineRef = useRef<IPriceLine | null>(null);
 
   // Persistent engine for the live directive HUD — recreated only when symbol/interval/params change,
   // so trend-flip detection and pullback samples carry across renders (a fresh engine can never emit BUY/SELL).
@@ -3223,6 +3227,26 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
     const currentPos = paperAccount?.open;
     const isCurrentSymbol = currentPos && currentPos.symbol.toLowerCase() === symbol.toLowerCase();
 
+    // Real broker positions (when provided) supersede paper lines for this symbol
+    const hasRealPos = Array.isArray(positions) && positions.some(
+      (p) => String(p?.symbol || "").toLowerCase() === symbol.toLowerCase()
+    );
+    if (hasRealPos) {
+      if (posEntryLineRef.current) {
+        try { seriesRef.current.removePriceLine(posEntryLineRef.current); } catch {}
+        posEntryLineRef.current = null;
+      }
+      if (posStopLineRef.current) {
+        try { seriesRef.current.removePriceLine(posStopLineRef.current); } catch {}
+        posStopLineRef.current = null;
+      }
+      if (posTargetLineRef.current) {
+        try { seriesRef.current.removePriceLine(posTargetLineRef.current); } catch {}
+        posTargetLineRef.current = null;
+      }
+      return;
+    }
+
     // Clean up previous position lines if no position or symbol changed
     if (!isCurrentSymbol || !currentPos) {
       if (posEntryLineRef.current) {
@@ -3317,6 +3341,106 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
     }
   }, [paperAccount, symbol, tick, livePrice]);
 
+  // Render real broker position lines (Entry, SL, TP) from the positions prop
+  useEffect(() => {
+    if (!seriesRef.current) return;
+
+    const pos = Array.isArray(positions)
+      ? positions.find((p) => String(p?.symbol || "").toLowerCase() === symbol.toLowerCase())
+      : undefined;
+
+    const removeLine = (ref: React.MutableRefObject<IPriceLine | null>) => {
+      if (ref.current) {
+        try { seriesRef.current.removePriceLine(ref.current); } catch {}
+        ref.current = null;
+      }
+    };
+
+    if (!pos || !pos.entryPrice) {
+      removeLine(realPosEntryLineRef);
+      removeLine(realPosStopLineRef);
+      removeLine(realPosTargetLineRef);
+      return;
+    }
+
+    const rawLtp = livePrice || tick?.ltp || pos.markPrice || pos.entryPrice;
+    const prec = getPricePrecision(Number(pos.entryPrice)).precision;
+    const isLong = String(pos.side).toUpperCase() === "LONG";
+    const pnlPct = rawLtp > 0 ? ((rawLtp - pos.entryPrice) / pos.entryPrice) * 100 * (isLong ? 1 : -1) : 0;
+    const pnlSign = pnlPct >= 0 ? "+" : "";
+    const qtyLabel = pos.qty !== undefined && pos.qty !== null ? ` ${pos.qty}` : "";
+    const levLabel = pos.leverage ? ` ${pos.leverage}x` : "";
+
+    const entryTitle = `POS ${isLong ? "LONG" : "SHORT"}${qtyLabel}${levLabel} @ $${formatPriceDynamic(Number(pos.entryPrice), prec)} (${pnlSign}${pnlPct.toFixed(2)}%)`;
+
+    if (!realPosEntryLineRef.current) {
+      try {
+        realPosEntryLineRef.current = seriesRef.current.createPriceLine({
+          price: Number(pos.entryPrice),
+          color: isLong ? "#00F5A0" : "#FF495C",
+          lineWidth: 2,
+          lineStyle: LineStyle.Solid,
+          axisLabelVisible: true,
+          title: entryTitle,
+        });
+      } catch {}
+    } else {
+      try {
+        realPosEntryLineRef.current.applyOptions({
+          price: Number(pos.entryPrice),
+          color: isLong ? "#00F5A0" : "#FF495C",
+          title: entryTitle,
+        });
+      } catch {}
+    }
+
+    if (pos.stopLoss && Number(pos.stopLoss) > 0) {
+      const slPct = Math.abs(((Number(pos.stopLoss) - Number(pos.entryPrice)) / Number(pos.entryPrice)) * 100);
+      const stopTitle = `SL $${formatPriceDynamic(Number(pos.stopLoss), prec)} (-${slPct.toFixed(2)}%)`;
+      if (!realPosStopLineRef.current) {
+        try {
+          realPosStopLineRef.current = seriesRef.current.createPriceLine({
+            price: Number(pos.stopLoss),
+            color: "#FF495C",
+            lineWidth: 1,
+            lineStyle: LineStyle.Dotted,
+            axisLabelVisible: true,
+            title: stopTitle,
+          });
+        } catch {}
+      } else {
+        try {
+          realPosStopLineRef.current.applyOptions({ price: Number(pos.stopLoss), title: stopTitle });
+        } catch {}
+      }
+    } else {
+      removeLine(realPosStopLineRef);
+    }
+
+    if (pos.takeProfit && Number(pos.takeProfit) > 0) {
+      const tpPct = Math.abs(((Number(pos.takeProfit) - Number(pos.entryPrice)) / Number(pos.entryPrice)) * 100);
+      const targetTitle = `TP $${formatPriceDynamic(Number(pos.takeProfit), prec)} (+${tpPct.toFixed(2)}%)`;
+      if (!realPosTargetLineRef.current) {
+        try {
+          realPosTargetLineRef.current = seriesRef.current.createPriceLine({
+            price: Number(pos.takeProfit),
+            color: "#00E5FF",
+            lineWidth: 1,
+            lineStyle: LineStyle.Dotted,
+            axisLabelVisible: true,
+            title: targetTitle,
+          });
+        } catch {}
+      } else {
+        try {
+          realPosTargetLineRef.current.applyOptions({ price: Number(pos.takeProfit), title: targetTitle });
+        } catch {}
+      }
+    } else {
+      removeLine(realPosTargetLineRef);
+    }
+  }, [positions, symbol, tick, livePrice]);
+
   // Cleanup price lines on unmount or series reset
   useEffect(() => {
     return () => {
@@ -3341,6 +3465,18 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
           try { seriesRef.current.removePriceLine(posTargetLineRef.current); } catch {}
           posTargetLineRef.current = null;
         }
+        if (realPosEntryLineRef.current) {
+          try { seriesRef.current.removePriceLine(realPosEntryLineRef.current); } catch {}
+          realPosEntryLineRef.current = null;
+        }
+        if (realPosStopLineRef.current) {
+          try { seriesRef.current.removePriceLine(realPosStopLineRef.current); } catch {}
+          realPosStopLineRef.current = null;
+        }
+        if (realPosTargetLineRef.current) {
+          try { seriesRef.current.removePriceLine(realPosTargetLineRef.current); } catch {}
+          realPosTargetLineRef.current = null;
+        }
       }
       bidLineRef.current = null;
       askLineRef.current = null;
@@ -3351,6 +3487,9 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
       posEntryLineRef.current = null;
       posStopLineRef.current = null;
       posTargetLineRef.current = null;
+      realPosEntryLineRef.current = null;
+      realPosStopLineRef.current = null;
+      realPosTargetLineRef.current = null;
     };
   }, []);
 
