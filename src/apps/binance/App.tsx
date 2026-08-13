@@ -692,7 +692,15 @@ export function App() {
                 </div>
 
                 <div style={{ flex: 1, minHeight: "520px" }}>
-                  <TradingViewChart adapter={adapterInstance} symbol={selectedSymbol} interval={selectedInterval} livePrice={tick?.ltp} tick={tick} />
+                  <TradingViewChart
+                    adapter={adapterInstance}
+                    symbol={selectedSymbol}
+                    interval={selectedInterval}
+                    livePrice={tick?.ltp}
+                    tick={tick}
+                    positions={positions}
+                    orders={orders}
+                  />
                 </div>
               </div>
 

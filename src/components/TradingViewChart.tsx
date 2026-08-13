@@ -259,6 +259,7 @@ export interface ChartProps {
   customCandles?: any[];
   tick?: any;
   positions?: any[];  // real broker positions — drawn as entry/SL/TP price lines (supersedes paper position lines)
+  orders?: any[];     // real broker open limit/stop orders — drawn as order price lines
 }
 
 export interface IndicatorMeta {
@@ -454,9 +455,10 @@ const DEFAULT_SCALE_SETTINGS: ChartScaleSettings = {
 };
 
 export const TradingViewChart: React.FC<ChartProps> = (props) => {
-  const { adapter, symbol, interval, showIndicators = true, livePrice, customCandles, tick, positions } = props;
+  const { adapter, symbol, interval, showIndicators = true, livePrice, customCandles, tick, positions, orders } = props;
   const chartContainerRef = useRef<HTMLDivElement>(null);
   const legendRef = useRef<HTMLDivElement>(null);
+  const orderPriceLinesRef = useRef<Map<string, IPriceLine>>(new Map());
   const [isLoading, setIsLoading] = useState(true);
   const [isLazyLoading, setIsLazyLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -1566,6 +1568,8 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
   };
 
   const paperTick = async () => {
+    // Only auto-evaluate paper exits if paper trading is actively enabled
+    if (!paperEnabled) return;
     const { signal, acc, spot } = paperRef.current;
     const now = Date.now();
 
@@ -2979,7 +2983,18 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
             },
           });
 
-          chartRef.current = chart;
+            chartRef.current = chart;
+
+          // Reset all stale PriceLine references before creating the new series
+          posEntryLineRef.current = null;
+          posStopLineRef.current = null;
+          posTargetLineRef.current = null;
+          realPosEntryLineRef.current = null;
+          realPosStopLineRef.current = null;
+          realPosTargetLineRef.current = null;
+          bidLineRef.current = null;
+          askLineRef.current = null;
+          orderPriceLinesRef.current.clear();
 
           const candlestickSeries = chart.addSeries(CandlestickSeries, {
             upColor: isHollowRef.current ? "#0F131C" : activeThemeRef.current.upColor,
@@ -3609,24 +3624,7 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
     const hasRealPos = Array.isArray(positions) && positions.some(
       (p) => String(p?.symbol || "").toLowerCase() === symbol.toLowerCase()
     );
-    if (hasRealPos) {
-      if (posEntryLineRef.current) {
-        try { seriesRef.current.removePriceLine(posEntryLineRef.current); } catch {}
-        posEntryLineRef.current = null;
-      }
-      if (posStopLineRef.current) {
-        try { seriesRef.current.removePriceLine(posStopLineRef.current); } catch {}
-        posStopLineRef.current = null;
-      }
-      if (posTargetLineRef.current) {
-        try { seriesRef.current.removePriceLine(posTargetLineRef.current); } catch {}
-        posTargetLineRef.current = null;
-      }
-      return;
-    }
-
-    // Clean up previous position lines if no position or symbol changed
-    if (!isCurrentSymbol || !currentPos) {
+    if (hasRealPos || !isCurrentSymbol || !currentPos) {
       if (posEntryLineRef.current) {
         try { seriesRef.current.removePriceLine(posEntryLineRef.current); } catch {}
         posEntryLineRef.current = null;
@@ -3669,55 +3667,92 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
           color: isLong ? "#00F5A0" : "#FF495C",
           title: entryTitle,
         });
-      } catch (e) {}
+      } catch (e) {
+        try {
+          posEntryLineRef.current = seriesRef.current.createPriceLine({
+            price: currentPos.entryPrice,
+            color: isLong ? "#00F5A0" : "#FF495C",
+            lineWidth: 2,
+            lineStyle: LineStyle.Solid,
+            axisLabelVisible: true,
+            title: entryTitle,
+          });
+        } catch {}
+      }
     }
 
     // 2. Stop Loss Line
-    const slPct = Math.abs(((currentPos.stopPrice - currentPos.entryPrice) / currentPos.entryPrice) * 100);
-    const stopTitle = `SL $${formatPriceDynamic(currentPos.stopPrice, prec)} (-${slPct.toFixed(2)}%)`;
-    if (!posStopLineRef.current) {
-      try {
-        posStopLineRef.current = seriesRef.current.createPriceLine({
-          price: currentPos.stopPrice,
-          color: "#FF495C",
-          lineWidth: 1,
-          lineStyle: LineStyle.Dotted,
-          axisLabelVisible: true,
-          title: stopTitle,
-        });
-      } catch (e) {}
-    } else {
-      try {
-        posStopLineRef.current.applyOptions({
-          price: currentPos.stopPrice,
-          title: stopTitle,
-        });
-      } catch (e) {}
+    if (currentPos.stopPrice && currentPos.stopPrice > 0) {
+      const slPct = Math.abs(((currentPos.stopPrice - currentPos.entryPrice) / currentPos.entryPrice) * 100);
+      const stopTitle = `SL $${formatPriceDynamic(currentPos.stopPrice, prec)} (-${slPct.toFixed(2)}%)`;
+      if (!posStopLineRef.current) {
+        try {
+          posStopLineRef.current = seriesRef.current.createPriceLine({
+            price: currentPos.stopPrice,
+            color: "#FF495C",
+            lineWidth: 1,
+            lineStyle: LineStyle.Dotted,
+            axisLabelVisible: true,
+            title: stopTitle,
+          });
+        } catch (e) {}
+      } else {
+        try {
+          posStopLineRef.current.applyOptions({
+            price: currentPos.stopPrice,
+            title: stopTitle,
+          });
+        } catch (e) {
+          try {
+            posStopLineRef.current = seriesRef.current.createPriceLine({
+              price: currentPos.stopPrice,
+              color: "#FF495C",
+              lineWidth: 1,
+              lineStyle: LineStyle.Dotted,
+              axisLabelVisible: true,
+              title: stopTitle,
+            });
+          } catch {}
+        }
+      }
     }
 
     // 3. Take Profit Line
-    const tpPct = Math.abs(((currentPos.targetPrice - currentPos.entryPrice) / currentPos.entryPrice) * 100);
-    const targetTitle = `TP $${formatPriceDynamic(currentPos.targetPrice, prec)} (+${tpPct.toFixed(2)}%)`;
-    if (!posTargetLineRef.current) {
-      try {
-        posTargetLineRef.current = seriesRef.current.createPriceLine({
-          price: currentPos.targetPrice,
-          color: "#00E5FF",
-          lineWidth: 1,
-          lineStyle: LineStyle.Dotted,
-          axisLabelVisible: true,
-          title: targetTitle,
-        });
-      } catch (e) {}
-    } else {
-      try {
-        posTargetLineRef.current.applyOptions({
-          price: currentPos.targetPrice,
-          title: targetTitle,
-        });
-      } catch (e) {}
+    if (currentPos.targetPrice && currentPos.targetPrice > 0) {
+      const tpPct = Math.abs(((currentPos.targetPrice - currentPos.entryPrice) / currentPos.entryPrice) * 100);
+      const targetTitle = `TP $${formatPriceDynamic(currentPos.targetPrice, prec)} (+${tpPct.toFixed(2)}%)`;
+      if (!posTargetLineRef.current) {
+        try {
+          posTargetLineRef.current = seriesRef.current.createPriceLine({
+            price: currentPos.targetPrice,
+            color: "#00E5FF",
+            lineWidth: 1,
+            lineStyle: LineStyle.Dotted,
+            axisLabelVisible: true,
+            title: targetTitle,
+          });
+        } catch (e) {}
+      } else {
+        try {
+          posTargetLineRef.current.applyOptions({
+            price: currentPos.targetPrice,
+            title: targetTitle,
+          });
+        } catch (e) {
+          try {
+            posTargetLineRef.current = seriesRef.current.createPriceLine({
+              price: currentPos.targetPrice,
+              color: "#00E5FF",
+              lineWidth: 1,
+              lineStyle: LineStyle.Dotted,
+              axisLabelVisible: true,
+              title: targetTitle,
+            });
+          } catch {}
+        }
+      }
     }
-  }, [paperAccount, symbol, tick, livePrice]);
+  }, [paperAccount, symbol, tick, livePrice, positions]);
 
   // Render real broker position lines (Entry, SL, TP) from the positions prop
   useEffect(() => {
@@ -3729,7 +3764,7 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
 
     const removeLine = (ref: React.MutableRefObject<IPriceLine | null>) => {
       if (ref.current) {
-        try { seriesRef.current.removePriceLine(ref.current); } catch {}
+        try { seriesRef.current?.removePriceLine(ref.current); } catch {}
         ref.current = null;
       }
     };
@@ -3743,7 +3778,7 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
 
     const rawLtp = livePrice || tick?.ltp || pos.markPrice || pos.entryPrice;
     const prec = getPricePrecision(Number(pos.entryPrice)).precision;
-    const isLong = String(pos.side).toUpperCase() === "LONG";
+    const isLong = String(pos.side).toUpperCase() === "LONG" || String(pos.side).toUpperCase() === "BUY";
     const pnlPct = rawLtp > 0 ? ((rawLtp - pos.entryPrice) / pos.entryPrice) * 100 * (isLong ? 1 : -1) : 0;
     const pnlSign = pnlPct >= 0 ? "+" : "";
     const qtyLabel = pos.qty !== undefined && pos.qty !== null ? ` ${pos.qty}` : "";
@@ -3769,7 +3804,18 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
           color: isLong ? "#00F5A0" : "#FF495C",
           title: entryTitle,
         });
-      } catch {}
+      } catch {
+        try {
+          realPosEntryLineRef.current = seriesRef.current.createPriceLine({
+            price: Number(pos.entryPrice),
+            color: isLong ? "#00F5A0" : "#FF495C",
+            lineWidth: 2,
+            lineStyle: LineStyle.Solid,
+            axisLabelVisible: true,
+            title: entryTitle,
+          });
+        } catch {}
+      }
     }
 
     if (pos.stopLoss && Number(pos.stopLoss) > 0) {
@@ -3789,7 +3835,18 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
       } else {
         try {
           realPosStopLineRef.current.applyOptions({ price: Number(pos.stopLoss), title: stopTitle });
-        } catch {}
+        } catch {
+          try {
+            realPosStopLineRef.current = seriesRef.current.createPriceLine({
+              price: Number(pos.stopLoss),
+              color: "#FF495C",
+              lineWidth: 1,
+              lineStyle: LineStyle.Dotted,
+              axisLabelVisible: true,
+              title: stopTitle,
+            });
+          } catch {}
+        }
       }
     } else {
       removeLine(realPosStopLineRef);
@@ -3812,12 +3869,98 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
       } else {
         try {
           realPosTargetLineRef.current.applyOptions({ price: Number(pos.takeProfit), title: targetTitle });
-        } catch {}
+        } catch {
+          try {
+            realPosTargetLineRef.current = seriesRef.current.createPriceLine({
+              price: Number(pos.takeProfit),
+              color: "#00E5FF",
+              lineWidth: 1,
+              lineStyle: LineStyle.Dotted,
+              axisLabelVisible: true,
+              title: targetTitle,
+            });
+          } catch {}
+        }
       }
     } else {
       removeLine(realPosTargetLineRef);
     }
   }, [positions, symbol, tick, livePrice]);
+
+  // Render real broker Open Limit & Stop Orders as price lines on chart
+  useEffect(() => {
+    if (!seriesRef.current) return;
+    const series = seriesRef.current;
+    const currentLines = orderPriceLinesRef.current;
+
+    const symbolOrders = Array.isArray(orders)
+      ? orders.filter(
+          (o) =>
+            String(o?.symbol || "").toLowerCase() === symbol.toLowerCase() &&
+            (o.status === "NEW" || o.status === "OPEN" || o.status === "PENDING" || !o.status) &&
+            (Number(o.price) > 0 || Number(o.stopPrice) > 0)
+        )
+      : [];
+
+    const activeOrderIds = new Set<string>();
+
+    symbolOrders.forEach((order, idx) => {
+      const orderId = String(order.id || order.orderId || `order_${idx}`);
+      activeOrderIds.add(orderId);
+
+      const price = Number(order.price || order.stopPrice);
+      const side = String(order.side || "BUY").toUpperCase();
+      const type = String(order.type || "LIMIT").toUpperCase();
+      const qty = order.origQty || order.qty || order.quantity || "";
+      const isBuy = side === "BUY" || side === "LONG";
+      const prec = getPricePrecision(price).precision;
+
+      const orderTitle = `${side} ${type} ${qty ? qty + " " : ""}@ $${formatPriceDynamic(price, prec)}`;
+      const existingLine = currentLines.get(orderId);
+
+      if (!existingLine) {
+        try {
+          const line = series.createPriceLine({
+            price,
+            color: isBuy ? "#00F5A0" : "#FF495C",
+            lineWidth: 1,
+            lineStyle: LineStyle.Dashed,
+            axisLabelVisible: true,
+            title: orderTitle,
+          });
+          currentLines.set(orderId, line);
+        } catch {}
+      } else {
+        try {
+          existingLine.applyOptions({
+            price,
+            title: orderTitle,
+            color: isBuy ? "#00F5A0" : "#FF495C",
+          });
+        } catch {
+          try {
+            const line = series.createPriceLine({
+              price,
+              color: isBuy ? "#00F5A0" : "#FF495C",
+              lineWidth: 1,
+              lineStyle: LineStyle.Dashed,
+              axisLabelVisible: true,
+              title: orderTitle,
+            });
+            currentLines.set(orderId, line);
+          } catch {}
+        }
+      }
+    });
+
+    // Remove cancelled/filled orders
+    for (const [id, line] of currentLines.entries()) {
+      if (!activeOrderIds.has(id)) {
+        try { series.removePriceLine(line); } catch {}
+        currentLines.delete(id);
+      }
+    }
+  }, [orders, symbol]);
 
   // Cleanup price lines on unmount or series reset
   useEffect(() => {
@@ -3855,6 +3998,10 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
           try { seriesRef.current.removePriceLine(realPosTargetLineRef.current); } catch {}
           realPosTargetLineRef.current = null;
         }
+        for (const line of orderPriceLinesRef.current.values()) {
+          try { seriesRef.current.removePriceLine(line); } catch {}
+        }
+        orderPriceLinesRef.current.clear();
       }
       bidLineRef.current = null;
       askLineRef.current = null;
@@ -3863,6 +4010,12 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
       targetAskRef.current = null;
       currentVisualAskRef.current = null;
       posEntryLineRef.current = null;
+      posStopLineRef.current = null;
+      posTargetLineRef.current = null;
+      realPosEntryLineRef.current = null;
+      realPosStopLineRef.current = null;
+      realPosTargetLineRef.current = null;
+      orderPriceLinesRef.current.clear();
       posStopLineRef.current = null;
       posTargetLineRef.current = null;
       realPosEntryLineRef.current = null;
