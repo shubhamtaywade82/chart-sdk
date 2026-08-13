@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import type { IDataAdapter } from "../adapters/IDataAdapter";
 import {
   createChart,
@@ -407,15 +408,22 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
   const [showIndicatorsPanel, setShowIndicatorsPanel] = useState<boolean>(false);
   const [showThemePanel, setShowThemePanel] = useState<boolean>(false);
   const indicatorsPanelRef = useRef<HTMLDivElement>(null);
+  const indicatorsDropdownRef = useRef<HTMLDivElement>(null);
   const themePanelRef = useRef<HTMLDivElement>(null);
+  // Dropdown is portaled to <body> (see below) so it isn't clipped by the chart
+  // canvas's `overflow: hidden` ancestors — position is computed from the trigger button.
+  const [indicatorsDropdownPos, setIndicatorsDropdownPos] = useState<{ top: number; left: number } | null>(null);
 
   // Close both dropdowns on click-outside
   useEffect(() => {
     const handler = (e: MouseEvent) => {
-      if (indicatorsPanelRef.current && !indicatorsPanelRef.current.contains(e.target as Node)) {
+      const target = e.target as Node;
+      const insideTrigger = indicatorsPanelRef.current?.contains(target) ?? false;
+      const insideDropdown = indicatorsDropdownRef.current?.contains(target) ?? false;
+      if (!insideTrigger && !insideDropdown) {
         setShowIndicatorsPanel(false);
       }
-      if (themePanelRef.current && !themePanelRef.current.contains(e.target as Node)) {
+      if (themePanelRef.current && !themePanelRef.current.contains(target)) {
         setShowThemePanel(false);
       }
     };
@@ -3668,7 +3676,12 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
           <div ref={indicatorsPanelRef} style={{ position: "relative" }}>
             <button
               onClick={() => {
-                setShowIndicatorsPanel(!showIndicatorsPanel);
+                const next = !showIndicatorsPanel;
+                if (next && indicatorsPanelRef.current) {
+                  const rect = indicatorsPanelRef.current.getBoundingClientRect();
+                  setIndicatorsDropdownPos({ top: rect.bottom + 4, left: rect.left });
+                }
+                setShowIndicatorsPanel(next);
                 if (showThemePanel) setShowThemePanel(false);
               }}
               style={{
@@ -3691,13 +3704,15 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
               {showIndicatorsPanel ? <ChevronUp size={11} /> : <ChevronDown size={11} />}
             </button>
 
-            {/* INDICATORS MANAGEMENT DROPDOWN DRAWER */}
-            {showIndicatorsPanel && (
-              <div style={{
-                position: "absolute",
-                top: "28px",
-                left: 0,
-                zIndex: 30,
+            {/* INDICATORS MANAGEMENT DROPDOWN DRAWER — portaled to <body> so the chart
+                canvas's `overflow: hidden` ancestors can't clip it (that clipping was
+                hiding both the scrollbar and everything below the fold). */}
+            {showIndicatorsPanel && indicatorsDropdownPos && createPortal(
+              <div ref={indicatorsDropdownRef} style={{
+                position: "fixed",
+                top: `${indicatorsDropdownPos.top}px`,
+                left: `${indicatorsDropdownPos.left}px`,
+                zIndex: 9999,
                 display: "flex",
                 flexDirection: "column",
                 gap: "8px",
@@ -3709,7 +3724,7 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
                 border: "1px solid rgba(255, 255, 255, 0.15)",
                 boxShadow: "0 8px 24px rgba(0, 0, 0, 0.5)",
                 minWidth: "210px",
-                maxHeight: "calc(100vh - 140px)",
+                maxHeight: `calc(100vh - ${indicatorsDropdownPos.top + 16}px)`,
                 overflowY: "auto",
               }}>
                 {renderIndicatorSet(INDICATOR_SETS[0])}
@@ -3932,7 +3947,8 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
                     {scaleSettings.isLogScale ? "ON" : "OFF"}
                   </button>
                 </div>
-              </div>
+              </div>,
+              document.body
             )}
           </div>
 
