@@ -3,10 +3,11 @@ import react from "@vitejs/plugin-react";
 
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), "");
-  const app = process.env.VITE_APP || env.VITE_APP || "binance";
+  const app = process.env.VITE_APP || env.VITE_APP || "crypto";
 
   // Each app has its own backend port
   const backendPorts: Record<string, number> = {
+    crypto:  3002,
     binance: 3002,
     dhanhq:  3003,
     coindcx: 3004,

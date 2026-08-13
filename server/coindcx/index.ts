@@ -215,6 +215,85 @@ app.get("/api/orders", async (_req, res) => {
   }
 });
 
+let coindcxKillSwitch = false;
+
+app.get("/api/trader-controls", (_req, res) => {
+  res.json({
+    killSwitch: { killSwitchStatus: coindcxKillSwitch ? "ACTIVATED" : "DEACTIVATED" },
+  });
+});
+
+app.post("/api/trader-controls/killswitch", async (_req, res) => {
+  try {
+    coindcxKillSwitch = !coindcxKillSwitch;
+    if (coindcxKillSwitch) {
+      try {
+        const client = requireClient();
+        await client.cancelAllFuturesOrders();
+      } catch {}
+    }
+    res.json({ status: "success", killSwitch: { killSwitchStatus: coindcxKillSwitch ? "ACTIVATED" : "DEACTIVATED" } });
+  } catch (err: any) {
+    res.status(err.status || 500).json({ error: err.message });
+  }
+});
+
+app.post("/api/orders", async (req, res) => {
+  try {
+    const client = requireClient();
+    const { symbol, side, orderType, price, quantity, leverage, stopPrice } = req.body;
+    const pair = symbolToPair(symbol || "BTCUSDT");
+    const orderPayload: any = {
+      pair,
+      side: String(side || "buy").toLowerCase(),
+      order_type: String(orderType || "limit_order").toLowerCase(),
+      total_quantity: Number(quantity),
+      leverage: Number(leverage || 1),
+    };
+    if (price && Number(price) > 0) orderPayload.price = Number(price);
+    if (stopPrice && Number(stopPrice) > 0) orderPayload.stop_price = Number(stopPrice);
+
+    const result = await client.createFuturesOrder(orderPayload);
+    res.json({ status: "success", data: result });
+  } catch (err: any) {
+    res.status(err.status || 500).json({ error: err.message, details: err.data });
+  }
+});
+
+app.delete("/api/orders/:id", async (req, res) => {
+  try {
+    const client = requireClient();
+    const result = await client.cancelFuturesOrder(req.params.id);
+    res.json({ status: "success", data: result });
+  } catch (err: any) {
+    res.status(err.status || 500).json({ error: err.message, details: err.data });
+  }
+});
+
+app.post("/api/positions/close", async (req, res) => {
+  try {
+    const client = requireClient();
+    const { symbol, positionId } = req.body;
+    let result;
+    if (positionId) {
+      result = await client.closeFuturesPosition(positionId);
+    } else if (symbol) {
+      const pair = symbolToPair(symbol);
+      result = await client.exitFuturesPosition(pair);
+    }
+    res.json({ status: "success", data: result });
+  } catch (err: any) {
+    res.status(err.status || 500).json({ error: err.message, details: err.data });
+  }
+});
+
+app.get("/api/credentials/status", (_req, res) => {
+  res.json({
+    hasCredentials: Boolean(FUTURES_API_KEY && FUTURES_API_SECRET),
+    keyMasked: FUTURES_API_KEY ? `${FUTURES_API_KEY.slice(0, 4)}...${FUTURES_API_KEY.slice(-4)}` : null,
+  });
+});
+
 app.get("/api/charts/intraday", async (req, res) => {
   try {
     const symbol = String(req.query.symbol || "btcusdt");

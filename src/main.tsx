@@ -14,7 +14,7 @@ async function bootstrap() {
     ? "DhanHQ Pro Trading Terminal"
     : appId === "coindcx"
       ? "CoinDCX Pro Trading Terminal"
-      : "Binance Charts Pro Trading Terminal";
+      : "Crypto Pro Terminal — Binance Market Data & Multi-Broker";
 
   let AppComponent: React.ComponentType;
 

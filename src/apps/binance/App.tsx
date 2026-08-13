@@ -24,6 +24,8 @@ import { FuturesBacktestWorkbench } from "../../components/research/FuturesBackt
 import { ConfluenceBacktestWorkbench } from "../../components/research/ConfluenceBacktestWorkbench";
 import { PositioningAnalyticsView } from "../../components/research/PositioningAnalyticsView";
 import { AdaptiveSupertrendWorkbench } from "../../components/research/AdaptiveSupertrendWorkbench";
+import { ExecutionControlBar, ExecutionMode, ExecutionBroker, ExecutionSubMode } from "../../components/ExecutionControlBar";
+import { AuthCredentialsModal } from "../../components/AuthCredentialsModal";
 
 interface TickData {
   symbol: string;
@@ -141,6 +143,39 @@ export function App() {
   // Symbol subscription is handled inside the main WebSocket useEffect below
   // (sending a new subscribe message on reconnect is sufficient)
 
+  // Execution Mode & Broker Selection State
+  const [execMode, setExecMode] = useState<ExecutionMode>(() => {
+    try { return (localStorage.getItem("crypto_exec_mode") as any) || "paper"; } catch {}
+    return "paper";
+  });
+  const [selectedBroker, setSelectedBroker] = useState<ExecutionBroker>(() => {
+    try { return (localStorage.getItem("crypto_selected_broker") as any) || "binance"; } catch {}
+    return "binance";
+  });
+  const [execSubMode, setExecSubMode] = useState<ExecutionSubMode>(() => {
+    try { return (localStorage.getItem("crypto_exec_submode") as any) || "monitor"; } catch {}
+    return "monitor";
+  });
+  const [showAuthModal, setShowAuthModal] = useState(false);
+  const [authStatus, setAuthStatus] = useState<{ binance: boolean; coindcx: boolean }>({ binance: true, coindcx: false });
+
+  const brokerApi = selectedBroker === "coindcx" ? "/api/coindcx" : "/api";
+
+  const handleSetExecMode = (mode: ExecutionMode) => {
+    setExecMode(mode);
+    try { localStorage.setItem("crypto_exec_mode", mode); } catch {}
+  };
+
+  const handleSetBroker = (broker: ExecutionBroker) => {
+    setSelectedBroker(broker);
+    try { localStorage.setItem("crypto_selected_broker", broker); } catch {}
+  };
+
+  const handleSetSubMode = (subMode: ExecutionSubMode) => {
+    setExecSubMode(subMode);
+    try { localStorage.setItem("crypto_exec_submode", subMode); } catch {}
+  };
+
   // Data states
   const [funds, setFunds] = useState<any>(null);
   const [bias, setBias] = useState<any>(null);
@@ -230,11 +265,22 @@ export function App() {
 
   // Fetch tab-specific data on demand & periodic background refresh for funds
   useEffect(() => {
-    fetchPortfolioAndLedger(); // Always fetch funds on mount & symbol change for Header Capsule
+    const checkAuth = async () => {
+      try {
+        const cRes = await fetch("/api/coindcx/credentials/status").catch(() => null);
+        const cJson = cRes ? await cRes.json().catch(() => null) : null;
+        setAuthStatus({
+          binance: true,
+          coindcx: Boolean(cJson?.hasCredentials),
+        });
+      } catch {}
+    };
+    checkAuth();
+    fetchPortfolioAndLedger();
     if (activeTab === "bias") {
       fetchBias();
     }
-  }, [activeTab, selectedSymbol]);
+  }, [activeTab, selectedSymbol, selectedBroker]);
 
   const fetchBias = async () => {
     setLoading(true);
@@ -252,24 +298,24 @@ export function App() {
     setLoading(true);
     try {
       const [fRes, pRes, oRes, lRes, tcRes] = await Promise.all([
-        fetch("/api/funds"),
-        fetch("/api/positions"),
-        fetch("/api/orders"),
-        fetch("/api/ledger"),
-        fetch("/api/trader-controls"),
+        fetch(`${brokerApi}/funds`),
+        fetch(`${brokerApi}/positions`),
+        fetch(`${brokerApi}/orders`),
+        fetch(`${brokerApi}/ledger`).catch(() => new Response(JSON.stringify({ data: null }))),
+        fetch(`${brokerApi}/trader-controls`).catch(() => new Response(JSON.stringify({ killSwitch: null }))),
       ]);
       const [fJson, pJson, oJson, lJson, tcJson] = await Promise.all([
-        fRes.json(),
-        pRes.json(),
-        oRes.json(),
-        lRes.json(),
-        tcRes.json(),
+        fRes.json().catch(() => ({ data: null })),
+        pRes.json().catch(() => ({ data: [] })),
+        oRes.json().catch(() => ({ data: [] })),
+        lRes.json().catch(() => ({ data: null })),
+        tcRes.json().catch(() => ({ killSwitch: null })),
       ]);
       if (fJson.data) setFunds(fJson.data);
       if (pJson.data) setPositions(Array.isArray(pJson.data) ? pJson.data : []);
       if (oJson.data) setOrders(Array.isArray(oJson.data) ? oJson.data : []);
       if (lJson.data) setLedger(lJson.data);
-      if (tcJson.killSwitch) {
+      if (tcJson?.killSwitch) {
         setKillSwitchActive(tcJson.killSwitch.killSwitchStatus === "ACTIVATED");
       }
     } catch (e) {
@@ -525,8 +571,20 @@ export function App() {
             }}
           >
             <span style={{ width: "6px", height: "6px", borderRadius: "50%", backgroundColor: wsConnected ? "#00F5A0" : "#FF495C" }} />
-            <span>{wsConnected ? "24×7 LIVE" : "OFFLINE"}</span>
+            <span>{wsConnected ? "BINANCE 24×7 FEED" : "OFFLINE"}</span>
           </div>
+
+          {/* Unified Execution Mode Control Bar */}
+          <ExecutionControlBar
+            execMode={execMode}
+            onSetExecMode={handleSetExecMode}
+            selectedBroker={selectedBroker}
+            onSetBroker={handleSetBroker}
+            execSubMode={execSubMode}
+            onSetSubMode={handleSetSubMode}
+            authStatus={authStatus}
+            onOpenAuthModal={() => setShowAuthModal(true)}
+          />
 
           {/* AI Results Dashboard Button */}
           <button
@@ -698,8 +756,8 @@ export function App() {
                     interval={selectedInterval}
                     livePrice={tick?.ltp}
                     tick={tick}
-                    positions={positions}
-                    orders={orders}
+                    positions={execMode === "real" ? positions : undefined}
+                    orders={execMode === "real" ? orders : undefined}
                   />
                 </div>
               </div>
@@ -1086,6 +1144,15 @@ export function App() {
           )}
         </main>
       </div>
+
+      {/* Broker Credentials & Configuration Modal */}
+      {showAuthModal && (
+        <AuthCredentialsModal
+          selectedBroker={selectedBroker}
+          authStatus={authStatus}
+          onClose={() => setShowAuthModal(false)}
+        />
+      )}
     </div>
   );
 }
