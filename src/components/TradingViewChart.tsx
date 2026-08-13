@@ -1,7 +1,6 @@
 import React, { useEffect, useRef, useState } from "react";
 import type { IDataAdapter, PerpetualMetrics } from "../adapters/IDataAdapter";
 import { createPortal } from "react-dom";
-import type { IDataAdapter } from "../adapters/IDataAdapter";
 import {
   createChart,
   ColorType,
@@ -1118,6 +1117,34 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
     showRift
   ]);
 
+  // Synchronize MA and VWAP indicator visibility to lightweight-charts series dynamically
+  useEffect(() => {
+    if (smaSeriesRef.current) {
+      smaSeriesRef.current.applyOptions({ visible: indicatorVisibility.sma20 });
+    }
+    if (emaSeriesRef.current) {
+      emaSeriesRef.current.applyOptions({ visible: indicatorVisibility.ema9 });
+    }
+    if (vwapSeriesRef.current) {
+      vwapSeriesRef.current.applyOptions({ visible: indicatorVisibility.vwap });
+    }
+    if (vwapUpperRef.current) {
+      vwapUpperRef.current.applyOptions({ visible: indicatorVisibility.vwap });
+    }
+    if (vwapLowerRef.current) {
+      vwapLowerRef.current.applyOptions({ visible: indicatorVisibility.vwap });
+    }
+  }, [indicatorVisibility.sma20, indicatorVisibility.ema9, indicatorVisibility.vwap]);
+
+  // Synchronize ADX Live Tuner indicator series visibility dynamically
+  useEffect(() => {
+    showADXTunerRef.current = showADXTuner;
+    if (adxSeriesRef.current) adxSeriesRef.current.applyOptions({ visible: showADXTuner });
+    if (diPlusSeriesRef.current) diPlusSeriesRef.current.applyOptions({ visible: showADXTuner });
+    if (diMinusSeriesRef.current) diMinusSeriesRef.current.applyOptions({ visible: showADXTuner });
+    if (adxThresholdSeriesRef.current) adxThresholdSeriesRef.current.applyOptions({ visible: showADXTuner });
+  }, [showADXTuner]);
+
   // Futures Setup Scanner State (persisted to localStorage)
   const [showSetupScan, setShowSetupScan] = useState<boolean>(() => {
     try {
@@ -1531,14 +1558,7 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
     return () => clearInterval(id);
   }, [showSetupScan, biasTfMult, interval]);
 
-  // Single redraw trigger for every overlay feature toggle (rAF-coalesced)
-  useEffect(() => {
-    scheduleDraw();
-  }, [
-    showFVG, showOB, showStructure, showLiquidity, showEquilibrium,
-    showICTSessions, showSilverBullet, showOTE, showJudas, showAMD,
-    showSD, showTL, showCP, showVolumeProfile,
-  ]);
+
 
   // Latest overlay visibility flags, read from refs inside drawSMCBoxes so the
   // rAF/scroll/loop closures never render stale toggles
@@ -1573,7 +1593,8 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
   // free DPR handling, free resize sync, correct clipping — rather than a manually synced overlay.
   const drawSMCBoxes = (ctx: CanvasRenderingContext2D, width: number, height: number) => {
     if (!chartRef.current || !seriesRef.current) return;
-    ctx.clearRect(0, 0, width, height);
+    ctx.save();
+    try {
 
     const timeScale = chartRef.current.timeScale();
     const series = seriesRef.current;
@@ -2682,6 +2703,9 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
           }
         });
       } catch (e) {}
+    }
+    } finally {
+      ctx.restore();
     }
   };
 
