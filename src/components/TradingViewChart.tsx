@@ -14,7 +14,13 @@ import {
 } from "lightweight-charts";
 import type { MouseEventParams, Time } from "lightweight-charts";
 import { SmcOverlayPrimitive } from "./SmcOverlayPrimitive";
-import { Clock, Eye, EyeOff, ChevronDown, ChevronUp, Sliders, Layers, Palette } from "lucide-react";
+import { Clock, Eye, EyeOff, ChevronDown, ChevronUp, Sliders, Layers, Palette, Code2, BookOpen } from "lucide-react";
+import { ScriptEditorModal } from "./scripting/ScriptEditorModal";
+import { ScriptLibraryModal } from "./scripting/ScriptLibraryModal";
+import { BacktestResultsPanel } from "./scripting/BacktestResultsPanel";
+import { executeScript } from "../scripting/scriptSandbox";
+import { runBacktest } from "../scripting/backtestEngine";
+import type { ScriptExecutionResult, ScriptLanguage, UserScript } from "../scripting/types";
 import {
   detectFVGs,
   detectOrderBlocks,
@@ -1144,6 +1150,122 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
     if (diMinusSeriesRef.current) diMinusSeriesRef.current.applyOptions({ visible: showADXTuner });
     if (adxThresholdSeriesRef.current) adxThresholdSeriesRef.current.applyOptions({ visible: showADXTuner });
   }, [showADXTuner]);
+
+  // Custom Pine Script / JS Scripting & Strategy State
+  const [showScriptEditor, setShowScriptEditor] = useState<boolean>(false);
+  const [showScriptLibrary, setShowScriptLibrary] = useState<boolean>(false);
+  const [showBacktestPanel, setShowBacktestPanel] = useState<boolean>(false);
+  const [activeCustomScript, setActiveCustomScript] = useState<UserScript | null>(null);
+  const [customScriptResult, setCustomScriptResult] = useState<ScriptExecutionResult | null>(null);
+  const [editingScript, setEditingScript] = useState<UserScript | null>(null);
+  const customPlotSeriesRefs = useRef<any[]>([]);
+
+  const applyCustomScriptResult = (result: ScriptExecutionResult, scriptInfo?: UserScript) => {
+    if (!chartRef.current) return;
+    const chart = chartRef.current;
+
+    // Clear previous custom series
+    customPlotSeriesRefs.current.forEach((s) => {
+      try {
+        chart.removeSeries(s);
+      } catch {}
+    });
+    customPlotSeriesRefs.current = [];
+
+    // Clear previous markers
+    try {
+      seriesRef.current?.setMarkers([]);
+    } catch {}
+
+    if (!result.success) {
+      setCustomScriptResult(result);
+      return;
+    }
+
+    // Render plots
+    const newSeries: any[] = [];
+    result.plots.forEach((plot) => {
+      if (plot.style === "histogram") {
+        const s = chart.addSeries(HistogramSeries, {
+          color: plot.color,
+          priceScaleId: result.overlay ? "right" : "custom_indicator",
+          title: plot.title,
+          priceLineVisible: false,
+          lastValueVisible: true,
+        });
+        if (!result.overlay) {
+          s.priceScale().applyOptions({ scaleMargins: { top: 0.75, bottom: 0.02 } });
+        }
+        s.setData(plot.data);
+        newSeries.push(s);
+      } else {
+        const s = chart.addSeries(LineSeries, {
+          color: plot.color,
+          lineWidth: (plot.lineWidth || 1.5) as any,
+          priceScaleId: result.overlay ? "right" : "custom_indicator",
+          title: plot.title,
+          priceLineVisible: false,
+          lastValueVisible: true,
+        });
+        if (!result.overlay) {
+          s.priceScale().applyOptions({ scaleMargins: { top: 0.75, bottom: 0.02 } });
+        }
+        s.setData(plot.data);
+        newSeries.push(s);
+      }
+    });
+    customPlotSeriesRefs.current = newSeries;
+
+    // Render shapes / markers
+    if (result.shapes.length > 0 && seriesRef.current) {
+      const markers = result.shapes.map((sh) => ({
+        time: sh.time as any,
+        position: (sh.style === "triangleup" || sh.style === "arrowup" ? "belowBar" : "aboveBar") as any,
+        color: sh.color,
+        shape: (sh.style === "triangleup" || sh.style === "arrowup" ? "arrowUp" : "arrowDown") as any,
+        text: sh.text || "",
+      }));
+      seriesRef.current.setMarkers(markers);
+    }
+
+    // For strategies, execute backtest simulation
+    if (result.type === "strategy" && allCandlesRef.current.length > 0) {
+      const buySignals = result.shapes.filter((s) => s.style === "triangleup").map((s) => s.time);
+      const sellSignals = result.shapes.filter((s) => s.style === "triangledown").map((s) => s.time);
+      const buyMask = allCandlesRef.current.map((c) => buySignals.includes(c.time));
+      const sellMask = allCandlesRef.current.map((c) => sellSignals.includes(c.time));
+
+      const backtestRes = runBacktest(allCandlesRef.current, buyMask, sellMask);
+      result.trades = backtestRes.trades;
+      result.equityCurve = backtestRes.equityCurve;
+      result.stats = backtestRes.stats;
+      setShowBacktestPanel(true);
+    }
+
+    setCustomScriptResult(result);
+    if (scriptInfo) setActiveCustomScript(scriptInfo);
+  };
+
+  const handleRunScriptFromEditor = (code: string, language: ScriptLanguage, name: string) => {
+    if (allCandlesRef.current.length === 0) {
+      return { success: false, error: "No candle data loaded" };
+    }
+    const result = executeScript(code, language, allCandlesRef.current);
+    if (result.success) {
+      const userScript: UserScript = {
+        id: `script_${Date.now()}`,
+        name,
+        type: result.type,
+        language,
+        code,
+        overlay: result.overlay,
+        updatedAt: Date.now(),
+      };
+      applyCustomScriptResult(result, userScript);
+      return { success: true };
+    }
+    return { success: false, error: result.error || "Script execution failed" };
+  };
 
   // Futures Setup Scanner State (persisted to localStorage)
   const [showSetupScan, setShowSetupScan] = useState<boolean>(() => {
@@ -4390,6 +4512,79 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
 
           <span style={{ color: "rgba(255, 255, 255, 0.2)" }}>•</span>
 
+          {/* Quick Pine Script Editor Button */}
+          <button
+            onClick={() => {
+              setEditingScript(activeCustomScript);
+              setShowScriptEditor(true);
+            }}
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: "4px",
+              background: showScriptEditor ? "rgba(0, 229, 255, 0.2)" : "rgba(255, 255, 255, 0.06)",
+              color: showScriptEditor ? "#00E5FF" : "var(--text-muted)",
+              border: showScriptEditor ? "1px solid #00E5FF" : "1px solid rgba(255, 255, 255, 0.15)",
+              padding: "2px 8px",
+              borderRadius: "4px",
+              fontSize: "11px",
+              fontWeight: 700,
+              cursor: "pointer",
+              transition: "all 0.2s ease",
+            }}
+          >
+            <span>✏️</span>
+            <span>PINE EDITOR</span>
+          </button>
+
+          {/* Quick Script Library Button */}
+          <button
+            onClick={() => setShowScriptLibrary(true)}
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: "4px",
+              background: "rgba(255, 255, 255, 0.06)",
+              color: "var(--text-muted)",
+              border: "1px solid rgba(255, 255, 255, 0.15)",
+              padding: "2px 8px",
+              borderRadius: "4px",
+              fontSize: "11px",
+              fontWeight: 700,
+              cursor: "pointer",
+              transition: "all 0.2s ease",
+            }}
+          >
+            <span>📚</span>
+            <span>SCRIPTS</span>
+          </button>
+
+          {/* Strategy Tester Toggle Button */}
+          {customScriptResult?.type === "strategy" && (
+            <button
+              onClick={() => setShowBacktestPanel(!showBacktestPanel)}
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: "4px",
+                background: showBacktestPanel ? "rgba(0, 245, 160, 0.2)" : "rgba(255, 255, 255, 0.06)",
+                color: showBacktestPanel ? "#00F5A0" : "var(--text-muted)",
+                border: showBacktestPanel ? "1px solid #00F5A0" : "1px solid rgba(255, 255, 255, 0.15)",
+                padding: "2px 8px",
+                borderRadius: "4px",
+                fontSize: "11px",
+                fontWeight: 700,
+                cursor: "pointer",
+                transition: "all 0.2s ease",
+              }}
+            >
+              <span>📊</span>
+              <span>STRATEGY TESTER</span>
+            </button>
+          )}
+
+          <span style={{ color: "rgba(255, 255, 255, 0.2)" }}>•</span>
+
           {/* GROUP 1: MOVING AVERAGES */}
           <div style={{ display: "flex", alignItems: "center", gap: "4px" }}>
             <span style={{ width: "6px", height: "6px", borderRadius: "50%", background: isAnyInd ? "#00E5FF" : "var(--text-muted)" }} />
@@ -4952,6 +5147,50 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
             setShowRift(false);
             scheduleDraw();
           }}
+        />
+      )}
+
+      {/* Pine Script / JS Code Editor Modal */}
+      {showScriptEditor && (
+        <ScriptEditorModal
+          initialScript={editingScript}
+          onClose={() => setShowScriptEditor(false)}
+          onRunScript={handleRunScriptFromEditor}
+        />
+      )}
+
+      {/* Script Library Modal */}
+      {showScriptLibrary && (
+        <ScriptLibraryModal
+          onClose={() => setShowScriptLibrary(false)}
+          onSelectScript={(script, runImmediately) => {
+            setShowScriptLibrary(false);
+            if (runImmediately) {
+              if (allCandlesRef.current.length > 0) {
+                const res = executeScript(script.code, script.language, allCandlesRef.current);
+                applyCustomScriptResult(res, script);
+              }
+            } else {
+              setEditingScript(script);
+              setShowScriptEditor(true);
+            }
+          }}
+          onNewScript={() => {
+            setShowScriptLibrary(false);
+            setEditingScript(null);
+            setShowScriptEditor(true);
+          }}
+        />
+      )}
+
+      {/* Strategy Backtest Results Panel */}
+      {showBacktestPanel && customScriptResult?.stats && (
+        <BacktestResultsPanel
+          strategyName={activeCustomScript?.name || "Strategy"}
+          stats={customScriptResult.stats}
+          trades={customScriptResult.trades || []}
+          equityCurve={customScriptResult.equityCurve || []}
+          onClose={() => setShowBacktestPanel(false)}
         />
       )}
 
