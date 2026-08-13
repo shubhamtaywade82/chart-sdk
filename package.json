@@ -27,7 +27,7 @@
     "cors": "^2.8.5",
     "dotenv": "^17.3.1",
     "express": "^4.21.2",
-    "lightweight-charts": "^5.0.3",
+    "lightweight-charts": "^5.2.1",
     "lucide-react": "^0.477.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
