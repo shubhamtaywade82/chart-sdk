@@ -238,7 +238,40 @@ app.post("/api/trader-controls/killswitch", async (_req, res) => {
   }
 });
 
+// Hard Safety Guard: Live order placement, cancellation, and position exit are DISABLED by default
+let liveTradingAllowed = process.env.COINDCX_ENABLE_LIVE_ORDERS === "true";
+
+const checkLiveTradingGuard = (res: express.Response): boolean => {
+  if (!liveTradingAllowed) {
+    res.status(403).json({
+      status: "error",
+      code: "LIVE_EXECUTION_BLOCKED",
+      error: "Live order execution is HARD-DISABLED by default for safety. Only read-only data fetching (funds, positions, orders, klines) is enabled.",
+    });
+    return false;
+  }
+  return true;
+};
+
+app.get("/api/execution-guard/status", (_req, res) => {
+  res.json({
+    status: "success",
+    liveTradingAllowed,
+    hasCredentials: Boolean(FUTURES_API_KEY && FUTURES_API_SECRET),
+  });
+});
+
+app.post("/api/execution-guard/toggle", (req, res) => {
+  const { enable } = req.body;
+  liveTradingAllowed = Boolean(enable);
+  res.json({
+    status: "success",
+    liveTradingAllowed,
+  });
+});
+
 app.post("/api/orders", async (req, res) => {
+  if (!checkLiveTradingGuard(res)) return;
   try {
     const client = requireClient();
     const { symbol, side, orderType, price, quantity, leverage, stopPrice } = req.body;
@@ -261,6 +294,7 @@ app.post("/api/orders", async (req, res) => {
 });
 
 app.delete("/api/orders/:id", async (req, res) => {
+  if (!checkLiveTradingGuard(res)) return;
   try {
     const client = requireClient();
     const result = await client.cancelFuturesOrder(req.params.id);
@@ -271,6 +305,7 @@ app.delete("/api/orders/:id", async (req, res) => {
 });
 
 app.post("/api/positions/close", async (req, res) => {
+  if (!checkLiveTradingGuard(res)) return;
   try {
     const client = requireClient();
     const { symbol, positionId } = req.body;
@@ -291,6 +326,7 @@ app.get("/api/credentials/status", (_req, res) => {
   res.json({
     hasCredentials: Boolean(FUTURES_API_KEY && FUTURES_API_SECRET),
     keyMasked: FUTURES_API_KEY ? `${FUTURES_API_KEY.slice(0, 4)}...${FUTURES_API_KEY.slice(-4)}` : null,
+    liveTradingAllowed,
   });
 });
 

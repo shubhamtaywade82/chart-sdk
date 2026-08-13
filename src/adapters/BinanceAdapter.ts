@@ -89,6 +89,29 @@ export class BinanceAdapter implements IDataAdapter {
       }
     } catch {}
 
+    // CoinDCX public fallback (since CoinDCX routes through Binance liquidity)
+    try {
+      const normSym = symbol.toLowerCase().replace(/[^a-z0-9]/g, "");
+      const pair = `B-${normSym.replace(/usdt$/i, "").toUpperCase()}_USDT`;
+      const coindcxRes = await fetch(`/api/coindcx/charts/intraday?symbol=${encodeURIComponent(normSym)}&interval=${encodeURIComponent(interval)}&limit=${limit}`);
+      if (coindcxRes.ok) {
+        const json = await coindcxRes.json();
+        if (Array.isArray(json?.candles) && json.candles.length > 0) return json.candles;
+      }
+      const directCoinDcx = await fetch(`https://public.coindcx.com/market_data/candles?pair=${pair}&interval=${interval.endsWith("m") ? interval : `${interval}m`}&limit=${limit}`);
+      if (directCoinDcx.ok) {
+        const raw = await directCoinDcx.json();
+        return (Array.isArray(raw) ? [...raw].reverse() : []).map((c: any) => ({
+          time: Math.floor((Number(c.time || c.open_time || 0) < 1e11 ? Number(c.time || c.open_time || 0) : Number(c.time || c.open_time || 0) / 1000)),
+          open: Number(c.open || 0),
+          high: Number(c.high || 0),
+          low: Number(c.low || 0),
+          close: Number(c.close || 0),
+          volume: Number(c.volume || c.vol || 0),
+        }));
+      }
+    } catch {}
+
     return [];
   }
 

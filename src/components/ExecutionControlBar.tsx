@@ -14,6 +14,8 @@ interface ExecutionControlBarProps {
   onSetSubMode: (subMode: ExecutionSubMode) => void;
   authStatus: { binance: boolean; coindcx: boolean };
   onOpenAuthModal: () => void;
+  liveTradingAllowed?: boolean;
+  onToggleLiveSafetyLock?: () => void;
 }
 
 export const ExecutionControlBar: React.FC<ExecutionControlBarProps> = ({
@@ -25,6 +27,8 @@ export const ExecutionControlBar: React.FC<ExecutionControlBarProps> = ({
   onSetSubMode,
   authStatus,
   onOpenAuthModal,
+  liveTradingAllowed = false,
+  onToggleLiveSafetyLock,
 }) => {
   const isCoinDcxAuthed = authStatus.coindcx;
   const currentAuthed = selectedBroker === "binance" ? authStatus.binance : isCoinDcxAuthed;
@@ -97,7 +101,24 @@ export const ExecutionControlBar: React.FC<ExecutionControlBarProps> = ({
             }}
           >
             <button
+              onClick={() => onSetBroker("coindcx")}
+              title="Execute on CoinDCX Futures using Binance real-time market data"
+              style={{
+                background: selectedBroker === "coindcx" ? "rgba(33, 150, 243, 0.3)" : "transparent",
+                color: selectedBroker === "coindcx" ? "#64B5F6" : "rgba(255, 255, 255, 0.6)",
+                border: selectedBroker === "coindcx" ? "1px solid rgba(33, 150, 243, 0.5)" : "1px solid transparent",
+                borderRadius: "4px",
+                padding: "3px 8px",
+                fontSize: "10.5px",
+                fontWeight: 700,
+                cursor: "pointer",
+              }}
+            >
+              COINDCX EXECUTION
+            </button>
+            <button
               onClick={() => onSetBroker("binance")}
+              title="Binance Direct Execution"
               style={{
                 background: selectedBroker === "binance" ? "rgba(240, 185, 11, 0.2)" : "transparent",
                 color: selectedBroker === "binance" ? "#F0B90B" : "rgba(255, 255, 255, 0.6)",
@@ -109,22 +130,7 @@ export const ExecutionControlBar: React.FC<ExecutionControlBarProps> = ({
                 cursor: "pointer",
               }}
             >
-              BINANCE USD-M
-            </button>
-            <button
-              onClick={() => onSetBroker("coindcx")}
-              style={{
-                background: selectedBroker === "coindcx" ? "rgba(33, 150, 243, 0.25)" : "transparent",
-                color: selectedBroker === "coindcx" ? "#64B5F6" : "rgba(255, 255, 255, 0.6)",
-                border: selectedBroker === "coindcx" ? "1px solid rgba(33, 150, 243, 0.4)" : "1px solid transparent",
-                borderRadius: "4px",
-                padding: "3px 8px",
-                fontSize: "10.5px",
-                fontWeight: 700,
-                cursor: "pointer",
-              }}
-            >
-              COINDCX FUTURES
+              BINANCE
             </button>
           </div>
 
@@ -179,6 +185,28 @@ export const ExecutionControlBar: React.FC<ExecutionControlBarProps> = ({
               <span>LIVE</span>
             </button>
           </div>
+
+          {/* Hard Execution Safety Guard Badge */}
+          <button
+            onClick={onToggleLiveSafetyLock}
+            title={liveTradingAllowed ? "Live order routing is UNLOCKED (Click to activate Safe Read-Only Lock)" : "Hard Safety Guard: All order placement is HARD-BLOCKED by default (Click to Unlock)"}
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: "4px",
+              background: liveTradingAllowed ? "rgba(255, 73, 92, 0.2)" : "rgba(0, 245, 160, 0.12)",
+              border: liveTradingAllowed ? "1px solid rgba(255, 73, 92, 0.5)" : "1px solid rgba(0, 245, 160, 0.35)",
+              color: liveTradingAllowed ? "#FF495C" : "#00F5A0",
+              borderRadius: "5px",
+              padding: "3px 8px",
+              fontSize: "10px",
+              fontWeight: 800,
+              cursor: "pointer",
+            }}
+          >
+            <Shield size={11} />
+            <span>{liveTradingAllowed ? "⚡ LIVE ORDERS UNLOCKED" : "🔒 SAFE (READ-ONLY)"}</span>
+          </button>
 
           {/* Auth / Credentials Status Indicator */}
           <button
