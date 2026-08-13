@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from "react";
-import type { IDataAdapter } from "../adapters/IDataAdapter";
+import type { IDataAdapter, PerpetualMetrics } from "../adapters/IDataAdapter";
 import {
   createChart,
   ColorType,
@@ -157,6 +157,33 @@ export const CandleCountdown = React.memo(function CandleCountdown({ interval }:
       <span style={{ fontWeight: 800, fontSize: "11px" }}>{value}</span>
     </div>
   );
+});
+
+// Ticks down to the next Binance Futures funding settlement (funding rates apply
+// every 8h). Self-contained interval like CandleCountdown so the parent doesn't
+// re-render every second just for this readout.
+export const FundingCountdown = React.memo(function FundingCountdown({ nextFundingTime }: { nextFundingTime: number }) {
+  const [value, setValue] = useState("--:--");
+
+  useEffect(() => {
+    if (!nextFundingTime) {
+      setValue("--:--");
+      return;
+    }
+    const update = () => {
+      const diffMs = Math.max(0, nextFundingTime - Date.now());
+      const diffSec = Math.floor(diffMs / 1000);
+      const hours = Math.floor(diffSec / 3600).toString().padStart(2, "0");
+      const mins = Math.floor((diffSec % 3600) / 60).toString().padStart(2, "0");
+      const secs = (diffSec % 60).toString().padStart(2, "0");
+      setValue(`${hours}:${mins}:${secs}`);
+    };
+    update();
+    const timer = setInterval(update, 1000);
+    return () => clearInterval(timer);
+  }, [nextFundingTime]);
+
+  return <span>{value}</span>;
 });
 
 export const CANDLE_THEMES: Record<string, CandleTheme> = {
@@ -331,6 +358,75 @@ export const fillCandleGaps = (sorted: any[], is24x7 = true): any[] => {
   return result;
 };
 
+// Session-anchored VWAP with volume-weighted standard-deviation bands, matching
+// TradingView's built-in VWAP indicator: resets its accumulator every UTC calendar
+// day (the standard anchor for both 24x7 crypto and single-session equity markets,
+// since overnight/weekend gaps already land on a new UTC date).
+export interface VwapPoint { time: number; value: number }
+export interface VwapAccumulator { day: string; cumPV: number; cumPV2: number; cumV: number }
+export interface VwapResult { vwap: VwapPoint[]; upper: VwapPoint[]; lower: VwapPoint[]; accum: VwapAccumulator }
+
+export const vwapDayKey = (unixSeconds: number): string => new Date(unixSeconds * 1000).toISOString().slice(0, 10);
+
+export const computeSessionVWAP = (candles: any[], stdevMult = 2): VwapResult => {
+  const vwap: VwapPoint[] = [];
+  const upper: VwapPoint[] = [];
+  const lower: VwapPoint[] = [];
+
+  const accum: VwapAccumulator = { day: "", cumPV: 0, cumPV2: 0, cumV: 0 };
+
+  for (const c of candles) {
+    const candleDay = vwapDayKey(c.time);
+    if (candleDay !== accum.day) {
+      accum.day = candleDay;
+      accum.cumPV = 0; accum.cumPV2 = 0; accum.cumV = 0;
+    }
+
+    const typicalPrice = (c.high + c.low + c.close) / 3;
+    const vol = c.volume > 0 ? c.volume : 0;
+    accum.cumPV += typicalPrice * vol;
+    accum.cumPV2 += typicalPrice * typicalPrice * vol;
+    accum.cumV += vol;
+
+    if (accum.cumV > 0) {
+      const value = accum.cumPV / accum.cumV;
+      const variance = Math.max(0, accum.cumPV2 / accum.cumV - value * value);
+      const stdev = Math.sqrt(variance);
+      vwap.push({ time: c.time, value });
+      upper.push({ time: c.time, value: value + stdevMult * stdev });
+      lower.push({ time: c.time, value: value - stdevMult * stdev });
+    }
+  }
+
+  return { vwap, upper, lower, accum };
+};
+
+// Folds one more candle into an existing VWAP accumulator — O(1) per bar, used to keep
+// VWAP live on bar rollover instead of recomputing the full series like SMA/EMA do.
+export const stepSessionVWAP = (accum: VwapAccumulator, c: any, stdevMult = 2): { point: VwapPoint; upper: VwapPoint; lower: VwapPoint } => {
+  const candleDay = vwapDayKey(c.time);
+  if (candleDay !== accum.day) {
+    accum.day = candleDay;
+    accum.cumPV = 0; accum.cumPV2 = 0; accum.cumV = 0;
+  }
+
+  const typicalPrice = (c.high + c.low + c.close) / 3;
+  const vol = c.volume > 0 ? c.volume : 0;
+  accum.cumPV += typicalPrice * vol;
+  accum.cumPV2 += typicalPrice * typicalPrice * vol;
+  accum.cumV += vol;
+
+  const value = accum.cumV > 0 ? accum.cumPV / accum.cumV : typicalPrice;
+  const variance = accum.cumV > 0 ? Math.max(0, accum.cumPV2 / accum.cumV - value * value) : 0;
+  const stdev = Math.sqrt(variance);
+
+  return {
+    point: { time: c.time, value },
+    upper: { time: c.time, value: value + stdevMult * stdev },
+    lower: { time: c.time, value: value - stdevMult * stdev },
+  };
+};
+
 export type DefaultScaleMode = "last_bars" | "fixed_spacing" | "fit_content";
 
 export interface ChartScaleSettings {
@@ -357,6 +453,10 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
   const [isLoading, setIsLoading] = useState(true);
   const [isLazyLoading, setIsLazyLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Funding rate / open interest — only populated for adapters that implement
+  // fetchPerpetualMetrics (perpetual futures). Stays null everywhere else, and the
+  // readout in the header simply doesn't render.
+  const [perpMetrics, setPerpMetrics] = useState<PerpetualMetrics | null>(null);
 
   // Candle Theme State (persisted to localStorage)
   const [selectedThemeId, setSelectedThemeId] = useState<string>(() => {
@@ -434,9 +534,12 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
   const [indicatorVisibility, setIndicatorVisibility] = useState(() => {
     try {
       const saved = localStorage.getItem("chart_indicator_visibility");
-      if (saved) return JSON.parse(saved) as { sma20: boolean; ema9: boolean };
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        return { sma20: true, ema9: true, vwap: true, ...parsed } as { sma20: boolean; ema9: boolean; vwap: boolean };
+      }
     } catch {}
-    return { sma20: true, ema9: true };
+    return { sma20: true, ema9: true, vwap: true };
   });
 
   // Scaling & Zoom Settings State (persisted to localStorage)
@@ -512,6 +615,12 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
   const volumeSeriesRef = useRef<any>(null);
   const smaSeriesRef = useRef<any>(null);
   const emaSeriesRef = useRef<any>(null);
+  const vwapSeriesRef = useRef<any>(null);
+  const vwapUpperRef = useRef<any>(null);
+  const vwapLowerRef = useRef<any>(null);
+  // Running VWAP accumulator state, reset whenever the UTC calendar day changes
+  // (session anchor) so the incremental bar-rollover update doesn't need a full recompute.
+  const vwapAccumRef = useRef<{ day: string; cumPV: number; cumPV2: number; cumV: number }>({ day: "", cumPV: 0, cumPV2: 0, cumV: 0 });
   const adxSeriesRef = useRef<any>(null);
   const diPlusSeriesRef = useRef<any>(null);
   const diMinusSeriesRef = useRef<any>(null);
@@ -606,6 +715,18 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
       drawPendingRef.current = false;
       smcPrimitiveRef.current?.requestUpdate();
     });
+  };
+
+  // Full VWAP recompute — used whenever authoritative (real-volume) candle data lands,
+  // since VWAP's accuracy depends on volume far more than SMA/EMA do and the live
+  // bar-rollover step only has an estimated placeholder volume for the forming candle.
+  const resyncVWAP = (candles: any[]) => {
+    if (!vwapSeriesRef.current) return;
+    const result = computeSessionVWAP(candles);
+    vwapAccumRef.current = result.accum;
+    vwapSeriesRef.current.setData(result.vwap);
+    vwapUpperRef.current?.setData(result.upper);
+    vwapLowerRef.current?.setData(result.lower);
   };
 
   const isFetchingHistoricalRef = useRef(false);
@@ -1043,12 +1164,16 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
   };
 
   // Group Master Toggle Helpers
-  const isAnyInd = indicatorVisibility.sma20 || indicatorVisibility.ema9;
+  const isAnyInd = indicatorVisibility.sma20 || indicatorVisibility.ema9 || indicatorVisibility.vwap;
+  const maActiveCount = [indicatorVisibility.sma20, indicatorVisibility.ema9, indicatorVisibility.vwap].filter(Boolean).length;
   const toggleIndicatorsGroup = () => {
     const nextVal = !isAnyInd;
     if (smaSeriesRef.current) smaSeriesRef.current.applyOptions({ visible: nextVal });
     if (emaSeriesRef.current) emaSeriesRef.current.applyOptions({ visible: nextVal });
-    const next = { sma20: nextVal, ema9: nextVal };
+    if (vwapSeriesRef.current) vwapSeriesRef.current.applyOptions({ visible: nextVal });
+    if (vwapUpperRef.current) vwapUpperRef.current.applyOptions({ visible: nextVal });
+    if (vwapLowerRef.current) vwapLowerRef.current.applyOptions({ visible: nextVal });
+    const next = { sma20: nextVal, ema9: nextVal, vwap: nextVal };
     setIndicatorVisibility(next);
     try { localStorage.setItem("chart_indicator_visibility", JSON.stringify(next)); } catch {}
   };
@@ -1114,6 +1239,11 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
       get: () => indicatorVisibility.sma20,
       set: (v) => { setIndicatorVisibility((prev) => { const next = { ...prev, sma20: v }; try { localStorage.setItem("chart_indicator_visibility", JSON.stringify(next)); } catch {} return next; }); },
     },
+    vwap: {
+      label: "VWAP + Bands (session)", color: "#FFA726",
+      get: () => indicatorVisibility.vwap,
+      set: (v) => { setIndicatorVisibility((prev) => { const next = { ...prev, vwap: v }; try { localStorage.setItem("chart_indicator_visibility", JSON.stringify(next)); } catch {} return next; }); },
+    },
     ema9: {
       label: "EMA 9", color: "#FFD700",
       get: () => indicatorVisibility.ema9,
@@ -1140,7 +1270,7 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
 
   const INDICATOR_SETS: IndicatorSetDef[] = [
     { id: "ai", label: "AI & ADAPTIVE SYSTEMS", keys: ["adaptiveSupertrend", "adxTuner", "rift"] },
-    { id: "ma", label: "MOVING AVERAGES", keys: ["sma20", "ema9"] },
+    { id: "ma", label: "MOVING AVERAGES & VWAP", keys: ["sma20", "ema9", "vwap"] },
     { id: "smc", label: "SMART MONEY CONCEPTS (SMC)", keys: ["fvg", "ob", "structure", "liquidity", "equilibrium", "volumeProfile"] },
     { id: "ict", label: "ICT", keys: ["ictSessions", "silverBullet", "ote", "judas", "amd"] },
     { id: "pa", label: "PRICE ACTION", keys: ["sd", "tl", "cp"] },
@@ -2559,6 +2689,28 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
     applyCandleSeriesOptions(activeThemeRef.current, nextHollow);
   };
 
+  // 0. Perpetual futures metrics (funding rate / mark price / open interest) —
+  // only polled when the active adapter opts in via fetchPerpetualMetrics.
+  useEffect(() => {
+    setPerpMetrics(null);
+    if (!adapter.fetchPerpetualMetrics) return;
+
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        const metrics = await adapter.fetchPerpetualMetrics!(symbol);
+        if (!cancelled) setPerpMetrics(metrics);
+      } catch {}
+    };
+
+    poll();
+    const timer = setInterval(poll, 30000);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [adapter, symbol]);
+
   // 1. Initial Chart Render & Authoritative Data Sync
   useEffect(() => {
     if (!chartContainerRef.current) return;
@@ -2769,6 +2921,35 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
             }
             emaSeries.setData(emaData);
 
+            // 2b. Session VWAP + volume-weighted stdev bands (resets each UTC day)
+            const vwapSeries = chart.addSeries(LineSeries, {
+              color: "#FFA726",
+              lineWidth: 2,
+              title: "VWAP",
+              priceLineVisible: false,
+              lastValueVisible: false,
+              visible: indicatorVisibility.vwap,
+            });
+            vwapSeriesRef.current = vwapSeries;
+
+            const vwapBandOptions = {
+              lineWidth: 1 as const,
+              lineStyle: LineStyle.Dashed,
+              priceLineVisible: false,
+              lastValueVisible: false,
+              visible: indicatorVisibility.vwap,
+            };
+            const vwapUpper = chart.addSeries(LineSeries, { ...vwapBandOptions, color: "rgba(255, 167, 38, 0.55)", title: "VWAP +2σ" });
+            const vwapLower = chart.addSeries(LineSeries, { ...vwapBandOptions, color: "rgba(255, 167, 38, 0.55)", title: "VWAP -2σ" });
+            vwapUpperRef.current = vwapUpper;
+            vwapLowerRef.current = vwapLower;
+
+            const vwapResult = computeSessionVWAP(formattedCandles);
+            vwapAccumRef.current = vwapResult.accum;
+            vwapSeries.setData(vwapResult.vwap);
+            vwapUpper.setData(vwapResult.upper);
+            vwapLower.setData(vwapResult.lower);
+
             // 3. True Wilder ADX, +DI, -DI & Threshold Line Series on dedicated ADX Pane Scale
             const sKey = `adx_tuner_${symbol.toLowerCase()}_${interval}`;
             const adxThId = localStorage.getItem("adx_tuner_theme") || "nightCyan";
@@ -2962,6 +3143,7 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
             }));
             seriesRef.current.setData(merged);
             if (volumeSeriesRef.current) volumeSeriesRef.current.setData(mergedVolume);
+            resyncVWAP(merged);
             scheduleDraw();
           }
         }
@@ -2997,6 +3179,7 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
             if (volumeSeriesRef.current) {
               volumeSeriesRef.current.setData(formattedVolume);
             }
+            resyncVWAP(authoritativeCandles);
             scheduleDraw();
           }
         }
@@ -3084,6 +3267,12 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
                 color: activeThemeRef.current.volUpColor,
               });
             }
+            if (vwapSeriesRef.current) {
+              const step = stepSessionVWAP(vwapAccumRef.current, newCandle);
+              vwapSeriesRef.current.update(step.point);
+              vwapUpperRef.current?.update(step.upper);
+              vwapLowerRef.current?.update(step.lower);
+            }
 
             // Reconcile ALL previous candles with the Binance authoritative intraday endpoint 2.5s post-close
             setTimeout(async () => {
@@ -3112,6 +3301,7 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
                     if (volumeSeriesRef.current) {
                       volumeSeriesRef.current.setData(formattedVolume);
                     }
+                    resyncVWAP(authoritativeCandles);
                   }
                 }
               } catch (e) {}
@@ -3634,6 +3824,30 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
             </span>
           </div>
 
+          {/* FUNDING RATE & OPEN INTEREST — perpetual futures adapters only */}
+          {perpMetrics && (
+            <>
+              <span style={{ color: "rgba(255, 255, 255, 0.2)" }}>•</span>
+              <div style={{ display: "flex", alignItems: "center", gap: "4px" }}>
+                <span style={{ fontSize: "10px", color: "var(--text-muted)", fontWeight: 700 }}>FUNDING</span>
+                <span style={{ fontWeight: 800, color: perpMetrics.lastFundingRate >= 0 ? "var(--accent-green)" : "var(--accent-red)" }}>
+                  {perpMetrics.lastFundingRate >= 0 ? "+" : ""}{(perpMetrics.lastFundingRate * 100).toFixed(4)}%
+                </span>
+                <span style={{ fontSize: "10px", color: "var(--text-muted)" }}>
+                  in <FundingCountdown nextFundingTime={perpMetrics.nextFundingTime} />
+                </span>
+              </div>
+
+              <span style={{ color: "rgba(255, 255, 255, 0.2)" }}>•</span>
+              <div style={{ display: "flex", alignItems: "center", gap: "4px" }}>
+                <span style={{ fontSize: "10px", color: "var(--text-muted)", fontWeight: 700 }}>OI</span>
+                <span style={{ fontWeight: 800, color: "var(--text-primary, #fff)" }}>
+                  {perpMetrics.openInterest.toLocaleString("en-US", { maximumFractionDigits: 1 })}
+                </span>
+              </div>
+            </>
+          )}
+
           {/* ACTIVE POSITION BADGE */}
           {paperAccount?.open && paperAccount.open.symbol.toLowerCase() === symbol.toLowerCase() && (() => {
             const pos = paperAccount.open;
@@ -4138,7 +4352,7 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
           {/* GROUP 1: MOVING AVERAGES */}
           <div style={{ display: "flex", alignItems: "center", gap: "4px" }}>
             <span style={{ width: "6px", height: "6px", borderRadius: "50%", background: isAnyInd ? "#00E5FF" : "var(--text-muted)" }} />
-            <span style={{ fontSize: "10px", fontWeight: 700, color: isAnyInd ? "#00E5FF" : "var(--text-muted)" }}>MA (2)</span>
+            <span style={{ fontSize: "10px", fontWeight: 700, color: isAnyInd ? "#00E5FF" : "var(--text-muted)" }}>MA ({maActiveCount}/3)</span>
             <button
               onClick={toggleIndicatorsGroup}
               style={{ background: "transparent", border: "none", color: isAnyInd ? "var(--accent-cyan)" : "var(--text-muted)", cursor: "pointer", padding: 0, display: "flex", alignItems: "center" }}

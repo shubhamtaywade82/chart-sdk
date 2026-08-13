@@ -1,6 +1,6 @@
 import type {
   IDataAdapter, Candle, OrderBookLevel, TickPayload,
-  SymbolDef, IntervalDef, FundsSnapshot,
+  SymbolDef, IntervalDef, FundsSnapshot, PerpetualMetrics,
 } from "./IDataAdapter";
 
 const safeCloseSocket = (socket: WebSocket | null) => {
@@ -362,5 +362,27 @@ export class BinanceAdapter implements IDataAdapter {
       }
     } catch {}
     return [];
+  }
+
+  // Funding rate / mark price / open interest — USDT-M Futures only, public REST
+  // (no auth needed, same as the klines fallback above).
+  async fetchPerpetualMetrics(symbol: string): Promise<PerpetualMetrics> {
+    const normSym = symbol.toUpperCase().replace(/[^A-Z0-9]/g, "");
+    const binanceSym = normSym.endsWith("USDT") ? normSym : `${normSym}USDT`;
+
+    const [premiumRes, oiRes] = await Promise.all([
+      fetch(`https://fapi.binance.com/fapi/v1/premiumIndex?symbol=${binanceSym}`).catch(() => null),
+      fetch(`https://fapi.binance.com/fapi/v1/openInterest?symbol=${binanceSym}`).catch(() => null),
+    ]);
+
+    const premium = premiumRes?.ok ? await premiumRes.json() : null;
+    const oi = oiRes?.ok ? await oiRes.json() : null;
+
+    return {
+      markPrice: parseFloat(premium?.markPrice ?? "0") || 0,
+      lastFundingRate: parseFloat(premium?.lastFundingRate ?? "0") || 0,
+      nextFundingTime: Number(premium?.nextFundingTime ?? 0) || 0,
+      openInterest: parseFloat(oi?.openInterest ?? "0") || 0,
+    };
   }
 }
