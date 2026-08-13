@@ -9,7 +9,10 @@ import {
   LineStyle,
   IPriceLine,
   CrosshairMode,
+  PriceScaleMode,
 } from "lightweight-charts";
+import type { MouseEventParams, Time } from "lightweight-charts";
+import { SmcOverlayPrimitive } from "./SmcOverlayPrimitive";
 import { Clock, Eye, EyeOff, ChevronDown, ChevronUp, Sliders, Layers, Palette } from "lucide-react";
 import {
   detectFVGs,
@@ -118,6 +121,11 @@ export const intervalToMinutes = (interval: string): number => {
 export const intervalToSeconds = (interval: string): number => {
   return intervalToMinutes(interval) * 60;
 };
+
+// Caps in-memory candle history so unbounded lazy-load-back-scroll / long-running
+// live sessions don't grow allCandlesRef (and every setData() call + SMC/ICT detector
+// scan) forever. 8000 bars is generous headroom for scroll-back while bounding worst case.
+export const MAX_CANDLES_IN_MEMORY = 8000;
 
 export const CandleCountdown = React.memo(function CandleCountdown({ interval }: { interval: string }) {
   const [value, setValue] = useState("00:00");
@@ -345,6 +353,7 @@ const DEFAULT_SCALE_SETTINGS: ChartScaleSettings = {
 export const TradingViewChart: React.FC<ChartProps> = (props) => {
   const { adapter, symbol, interval, showIndicators = true, livePrice, customCandles, tick, positions } = props;
   const chartContainerRef = useRef<HTMLDivElement>(null);
+  const legendRef = useRef<HTMLDivElement>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isLazyLoading, setIsLazyLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -454,7 +463,7 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
 
     try {
       seriesRef.current.priceScale().applyOptions({
-        mode: settings.isLogScale ? 1 : 0,
+        mode: settings.isLogScale ? PriceScaleMode.Logarithmic : PriceScaleMode.Normal,
         autoScale: true,
       });
     } catch (e) {
@@ -595,7 +604,7 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
     drawPendingRef.current = true;
     requestAnimationFrame(() => {
       drawPendingRef.current = false;
-      drawSMCBoxes();
+      smcPrimitiveRef.current?.requestUpdate();
     });
   };
 
@@ -1417,25 +1426,14 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
     adaptiveSupertrend: showAdaptiveSupertrend,
   };
 
-  const smcCanvasRef = useRef<HTMLCanvasElement>(null);
+  const smcPrimitiveRef = useRef<SmcOverlayPrimitive | null>(null);
 
   // Render: FVG + OB + Structure + Liquidity + P/D + Sessions + Silver Bullet + OTE + Judas + AMD + S&D + Trendlines + Candlestick Patterns
-  const drawSMCBoxes = () => {
-    const canvas = smcCanvasRef.current;
-    if (!canvas || !chartRef.current || !seriesRef.current) return;
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return;
-
-    const width = chartContainerRef.current?.clientWidth || canvas.width;
-    const height = chartContainerRef.current?.clientHeight || canvas.height;
-    const dpr = window.devicePixelRatio || 1;
-    const renderWidth = Math.round(width * dpr);
-    const renderHeight = Math.round(height * dpr);
-    if (canvas.width !== renderWidth || canvas.height !== renderHeight) {
-      canvas.width = renderWidth;
-      canvas.height = renderHeight;
-    }
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  // Draws through SmcOverlayPrimitive (attached to the candlestick series) instead of a
+  // separately positioned <canvas>, so it participates in the chart's own render pass —
+  // free DPR handling, free resize sync, correct clipping — rather than a manually synced overlay.
+  const drawSMCBoxes = (ctx: CanvasRenderingContext2D, width: number, height: number) => {
+    if (!chartRef.current || !seriesRef.current) return;
     ctx.clearRect(0, 0, width, height);
 
     const timeScale = chartRef.current.timeScale();
@@ -2548,6 +2546,10 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
     }
   };
 
+  // Keep the primitive pointed at the freshest drawSMCBoxes closure every render
+  // (it closes over some plain React state, e.g. showRift, not only refs).
+  smcPrimitiveRef.current?.setDrawFn(drawSMCBoxes);
+
   // Toggle Hollow Candles Mode (persisted to localStorage)
   const toggleHollowMode = () => {
     const nextHollow = !isHollowMode;
@@ -2571,6 +2573,29 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
     currentVisualPriceRef.current = null;
     targetVolumeRef.current = null;
     currentVisualVolumeRef.current = null;
+
+    // Native OHLC legend driven by the chart's own crosshair — updates the DOM directly
+    // (no React state) to stay cheap at pointer-move rates, same pattern as the LERP loop.
+    const handleCrosshairMove = (param: MouseEventParams<Time>) => {
+      const legendEl = legendRef.current;
+      const series = seriesRef.current;
+      if (!legendEl || !series) return;
+
+      const bar: any = param.time ? param.seriesData.get(series) : lastCandleValRef.current;
+      if (!bar || bar.open === undefined) {
+        legendEl.style.visibility = "hidden";
+        return;
+      }
+
+      legendEl.style.visibility = "visible";
+      const prec = getPricePrecision(bar.close ?? 0).precision;
+      const color = (bar.close ?? 0) >= (bar.open ?? 0) ? activeThemeRef.current.upColor : activeThemeRef.current.downColor;
+      legendEl.innerHTML =
+        `<span style="color:${color}">O ${formatPriceDynamic(bar.open, prec)}</span> ` +
+        `<span style="color:${color}">H ${formatPriceDynamic(bar.high, prec)}</span> ` +
+        `<span style="color:${color}">L ${formatPriceDynamic(bar.low, prec)}</span> ` +
+        `<span style="color:${color}">C ${formatPriceDynamic(bar.close, prec)}</span>`;
+    };
 
     const fetchAndRender = async () => {
       try {
@@ -2619,8 +2644,7 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
             crosshair: {
               mode: CrosshairMode.Normal,
             },
-            width: chartContainerRef.current!.clientWidth,
-            height: chartContainerRef.current!.clientHeight || 520,
+            autoSize: true,
             grid: {
               vertLines: { color: "rgba(255, 255, 255, 0.05)" },
               horzLines: { color: "rgba(255, 255, 255, 0.05)" },
@@ -2663,6 +2687,13 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
           });
 
           seriesRef.current = candlestickSeries;
+
+          const smcPrimitive = new SmcOverlayPrimitive();
+          smcPrimitive.setDrawFn(drawSMCBoxes);
+          candlestickSeries.attachPrimitive(smcPrimitive);
+          smcPrimitiveRef.current = smcPrimitive;
+
+          chart.subscribeCrosshairMove(handleCrosshairMove);
 
           // Volume Histogram on dedicated volume price scale (Bottom 25% of chart)
           const volumeSeries = chart.addSeries(HistogramSeries, {
@@ -2888,18 +2919,8 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
       }
     });
 
-    const resizeObserver = new ResizeObserver((entries) => {
-      if (chartRef.current && entries[0] && entries[0].contentRect) {
-        const { width } = entries[0].contentRect;
-        if (width > 0) {
-          chartRef.current.applyOptions({ width });
-        }
-      }
-    });
-
-    if (chartContainerRef.current) {
-      resizeObserver.observe(chartContainerRef.current);
-    }
+    // Resize is handled natively via the chart's autoSize option (see createChart above),
+    // which also keeps height in sync — a manual width-only ResizeObserver used to miss that.
 
     // Lazy-load older historical candles when user scrolls near the left edge
     let isFetchingHistory = false;
@@ -2932,7 +2953,7 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
             (c: any) => c.time < oldest.time
           );
           if (older.length > 0 && seriesRef.current) {
-            const merged = sanitizeAndSortCandles([...older, ...allCandlesRef.current], is24x7);
+            const merged = sanitizeAndSortCandles([...older, ...allCandlesRef.current], is24x7).slice(-MAX_CANDLES_IN_MEMORY);
             allCandlesRef.current = merged;
             const mergedVolume = merged.map((c: any) => ({
               time: c.time,
@@ -2956,7 +2977,13 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
         if (!isSubscribed || symbolRef.current !== symbol || intervalRef.current !== interval) return;
         if (fresh?.length && seriesRef.current) {
           const is24x7 = adapter?.is24x7 ?? true;
-          const authoritativeCandles = sanitizeAndSortCandles(fresh, is24x7);
+          // Merge (not replace) so older lazy-loaded history the user scrolled back to
+          // isn't silently wiped every reconciliation cycle — fresh values win on overlap
+          // since sanitizeAndSortCandles dedupes by time, keeping the later array entry.
+          const authoritativeCandles = sanitizeAndSortCandles(
+            allCandlesRef.current.length > 0 ? [...allCandlesRef.current, ...fresh] : fresh,
+            is24x7
+          ).slice(-MAX_CANDLES_IN_MEMORY);
           if (authoritativeCandles.length > 0) {
             allCandlesRef.current = authoritativeCandles;
 
@@ -2979,11 +3006,12 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
     return () => {
       isSubscribed = false;
       clearInterval(reconcileTimer);
-      resizeObserver.disconnect();
       if (chart) {
+        chart.unsubscribeCrosshairMove(handleCrosshairMove);
         chart.remove();
         chartRef.current = null;
       }
+      smcPrimitiveRef.current = null;
       bidLineRef.current = null;
       askLineRef.current = null;
       targetBidRef.current = null;
@@ -3045,7 +3073,7 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
           currentVisualVolumeRef.current = 10;
           targetVolumeRef.current = 10;
           lastCandleValRef.current = newCandle;
-          allCandlesRef.current = [...allCandlesRef.current, newCandle];
+          allCandlesRef.current = [...allCandlesRef.current, newCandle].slice(-MAX_CANDLES_IN_MEMORY);
 
           try {
             seriesRef.current.update(newCandle);
@@ -3065,7 +3093,12 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
                 if (symbolRef.current !== symbol || intervalRef.current !== interval || !seriesRef.current) return;
                 if (fresh?.length && seriesRef.current) {
                   const is24x7 = adapter?.is24x7 ?? true;
-                  const authoritativeCandles = sanitizeAndSortCandles(fresh, is24x7);
+                  // Merge with existing history rather than replacing it — see the 60s
+                  // reconciliation timer above for why (preserves lazy-loaded back-scroll).
+                  const authoritativeCandles = sanitizeAndSortCandles(
+                    allCandlesRef.current.length > 0 ? [...allCandlesRef.current, ...fresh] : fresh,
+                    is24x7
+                  ).slice(-MAX_CANDLES_IN_MEMORY);
                   if (authoritativeCandles.length > 0) {
                     allCandlesRef.current = authoritativeCandles;
 
@@ -4567,14 +4600,22 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
         </div>
       )}
 
-      {/* 2D Shaded SMC Overlay Canvas */}
-      <canvas
-        ref={smcCanvasRef}
+      {/* Native OHLC Legend — driven by chart.subscribeCrosshairMove(), updates the DOM directly */}
+      <div
+        ref={legendRef}
+        className="mono"
         style={{
           position: "absolute",
-          inset: 0,
+          top: "8px",
+          left: "12px",
+          zIndex: 11,
+          fontSize: "11px",
+          fontWeight: 700,
+          display: "flex",
+          gap: "10px",
           pointerEvents: "none",
-          zIndex: 10,
+          textShadow: "0 1px 2px rgba(0,0,0,0.6)",
+          visibility: "hidden",
         }}
       />
 
