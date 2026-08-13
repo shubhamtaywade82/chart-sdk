@@ -21,6 +21,7 @@ import {
 import { TradingViewChart, formatPriceDynamic, getPricePrecision } from "../../components/TradingViewChart";
 import { MarketDepthStream } from "../../components/MarketDepthStream";
 import { FuturesBacktestWorkbench } from "../../components/research/FuturesBacktestWorkbench";
+import { ConfluenceBacktestWorkbench } from "../../components/research/ConfluenceBacktestWorkbench";
 import { PositioningAnalyticsView } from "../../components/research/PositioningAnalyticsView";
 import { AdaptiveSupertrendWorkbench } from "../../components/research/AdaptiveSupertrendWorkbench";
 
@@ -45,7 +46,7 @@ interface SessionInfo {
 
 export function App() {
   const VALID_TABS = ["terminal", "ai_supertrend", "backtest", "intel", "bias", "portfolio"] as const;
-  const [activeTab, setActiveTab] = useState<"terminal" | "ai_supertrend" | "backtest" | "intel" | "bias" | "portfolio">(() => {
+  const [activeTab, setActiveTab] = useState<"terminal" | "ai_supertrend" | "backtest" | "confluence_backtest" | "intel" | "bias" | "portfolio">(() => {
     const saved = localStorage.getItem("binance_activeTab");
     return (VALID_TABS.includes(saved as any) ? saved : "terminal") as any;
   });
@@ -621,6 +622,7 @@ export function App() {
             { id: "terminal", label: "Real-Time Terminal", icon: BarChart2 },
             { id: "ai_supertrend", label: "AI Supertrend & Results Dashboard", icon: Brain },
             { id: "backtest", label: "Futures Backtest Workbench", icon: Activity },
+            { id: "confluence_backtest", label: "SMC/ICT Confluence Backtest", icon: Zap },
             { id: "intel", label: "Futures Intel & OI", icon: Layers },
             { id: "bias", label: "Multi-Timeframe Bias", icon: TrendingUp },
             { id: "portfolio", label: "Account & Ledger", icon: DollarSign },
@@ -740,6 +742,11 @@ export function App() {
           {/* TAB 3: FUTURES BACKTEST WORKBENCH */}
           {activeTab === "backtest" && (
             <FuturesBacktestWorkbench symbol={selectedSymbol} adapter={adapterInstance} />
+          )}
+
+          {/* TAB 3B: SMC/ICT CONFLUENCE BACKTEST */}
+          {activeTab === "confluence_backtest" && (
+            <ConfluenceBacktestWorkbench symbol={selectedSymbol} adapter={adapterInstance} />
           )}
 
           {/* TAB 3: FUTURES MARKET INTEL & OPEN INTEREST */}

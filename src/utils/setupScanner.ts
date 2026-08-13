@@ -322,8 +322,8 @@ export function recommendEntry(input: SetupScanInput, direction: SetupDirection)
   };
 }
 
-export function scanSetups(input: SetupScanInput): SetupSignal {
-  const now = Math.floor(Date.now() / 1000);
+export function scanSetups(input: SetupScanInput, asOf?: number): SetupSignal {
+  const now = asOf ?? Math.floor(Date.now() / 1000);
   const price = input.lastPrice;
 
   const htf = input.htf;

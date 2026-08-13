@@ -3,6 +3,7 @@ const adapterInstance = new CoindcxAdapter();
 
 import React, { useEffect, useState } from "react";
 import {
+  Activity,
   BarChart2,
   Clock,
   DollarSign,
@@ -18,6 +19,7 @@ import {
 } from "lucide-react";
 import { TradingViewChart, formatPriceDynamic, getPricePrecision } from "../../components/TradingViewChart";
 import { MarketDepthStream } from "../../components/MarketDepthStream";
+import { ConfluenceBacktestWorkbench } from "../../components/research/ConfluenceBacktestWorkbench";
 
 interface TickData {
   symbol: string;
@@ -40,7 +42,7 @@ interface SessionInfo {
 
 export function App() {
   const VALID_TABS = ["terminal", "portfolio"] as const;
-  const [activeTab, setActiveTab] = useState<"terminal" | "portfolio">(() => {
+  const [activeTab, setActiveTab] = useState<"terminal" | "confluence_backtest" | "portfolio">(() => {
     const saved = localStorage.getItem("coindcx_activeTab");
     return (VALID_TABS.includes(saved as any) ? saved : "terminal") as any;
   });
@@ -428,6 +430,7 @@ export function App() {
             </div>
             {[
               { id: "terminal", label: "Real-Time Terminal", icon: BarChart2 },
+              { id: "confluence_backtest", label: "SMC/ICT Confluence Backtest", icon: Activity },
               { id: "portfolio", label: `Positions & Account (${positions.length})`, icon: Target },
             ].map((t) => {
               const Icon = t.icon;
@@ -510,6 +513,11 @@ export function App() {
                 <MarketDepthStream bids={tick?.bids || []} asks={tick?.asks || []} symbol={selectedSymbol} />
               )}
             </div>
+          )}
+
+          {/* TAB 1B: SMC/ICT CONFLUENCE BACKTEST */}
+          {activeTab === "confluence_backtest" && (
+            <ConfluenceBacktestWorkbench symbol={selectedSymbol} adapter={adapterInstance} />
           )}
 
           {/* TAB 2: PORTFOLIO — real positions, orders & wallet */}

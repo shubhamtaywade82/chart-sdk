@@ -33,6 +33,7 @@ import { ExpiredOptionsTable } from "../../components/ExpiredOptionsTable";
 import { OptionsResearchWorkbench } from "../../components/research_dhanhq/OptionsResearchWorkbench";
 import { OptDeskExpiryArchivePage } from "../../components/OptDeskExpiryArchivePage";
 import { AdaptiveSupertrendWorkbench } from "../../components/research/AdaptiveSupertrendWorkbench";
+import { ConfluenceBacktestWorkbench } from "../../components/research/ConfluenceBacktestWorkbench";
 import { Brain } from "lucide-react";
 
 interface TickData {
@@ -67,7 +68,7 @@ const SYMBOL_ID_MAP: Record<string, { id: string; segment: string; instrument: s
 
 export function App() {
   const VALID_TABS = ["terminal", "ai_supertrend", "options", "expired", "optdesk", "bias", "portfolio"] as const;
-  const [activeTab, setActiveTab] = useState<"terminal" | "ai_supertrend" | "options" | "expired" | "optdesk" | "bias" | "portfolio">(() => {
+  const [activeTab, setActiveTab] = useState<"terminal" | "ai_supertrend" | "options" | "expired" | "optdesk" | "confluence_backtest" | "bias" | "portfolio">(() => {
     const saved = localStorage.getItem("dhan_activeTab");
     return (VALID_TABS.includes(saved as any) ? saved : "terminal") as any;
   });
@@ -793,6 +794,7 @@ export function App() {
               { id: "options", label: "Option Chain & Greeks", icon: Layers },
               { id: "expired", label: "Expired Research Workbench", icon: Database },
               { id: "optdesk", label: "OPTDESK Expiry Archive", icon: Database },
+              { id: "confluence_backtest", label: "SMC/ICT Confluence Backtest", icon: Activity },
               { id: "bias", label: "Multi-Timeframe Bias", icon: TrendingUp },
               { id: "portfolio", label: "Account & Ledger", icon: DollarSign },
             ].map((t) => {
@@ -1011,6 +1013,11 @@ export function App() {
           {/* TAB 3B: OPTDESK EXPIRY ARCHIVE DEDICATED PAGE */}
           {activeTab === "optdesk" && (
             <OptDeskExpiryArchivePage />
+          )}
+
+          {/* TAB 3C: SMC/ICT CONFLUENCE BACKTEST */}
+          {activeTab === "confluence_backtest" && (
+            <ConfluenceBacktestWorkbench symbol={selectedSymbol} adapter={adapterInstance} />
           )}
 
           {/* TAB 4: TECHNICAL ANALYSIS MULTI-TIMEFRAME BIAS ENGINE */}
