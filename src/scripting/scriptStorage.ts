@@ -157,6 +157,61 @@ if (rsiValue > overbought)
     strategy.close("Long")
 `,
   },
+  {
+    id: "builtin_microstructure_breakout",
+    name: "Microstructure Breakout & Volume Filter",
+    type: "indicator",
+    language: "pine",
+    overlay: true,
+    isBuiltIn: true,
+    updatedAt: Date.now(),
+    code: `//@version=6
+indicator("Microstructure Breakout & Volume Filter", overlay=true)
+
+lookback = input.int(20, "Lookback Length")
+volMult = input.float(1.5, "Volume Multiplier")
+
+highestHigh = ta.highest(high, lookback)
+lowestLow = ta.lowest(low, lookback)
+avgVol = ta.sma(volume, 20)
+
+isBullBreak = ta.crossover(close, highestHigh[1]) and volume > avgVol * volMult
+isBearBreak = ta.crossunder(close, lowestLow[1]) and volume > avgVol * volMult
+
+plot(highestHigh, color=color.aqua, title="Swing High", linewidth=1)
+plot(lowestLow, color=color.orange, title="Swing Low", linewidth=1)
+plotshape(isBullBreak, style=shape.triangleup, location=location.belowbar, color=color.green, text="BREAK LONG")
+plotshape(isBearBreak, style=shape.triangledown, location=location.abovebar, color=color.red, text="BREAK SHORT")
+`,
+  },
+  {
+    id: "builtin_orderflow_breakout_strat",
+    name: "Order Flow Breakout Strategy",
+    type: "strategy",
+    language: "pine",
+    overlay: true,
+    isBuiltIn: true,
+    updatedAt: Date.now(),
+    code: `//@version=6
+strategy("Order Flow Breakout Strategy", overlay=true)
+
+lookback = input.int(20, "Lookback Range")
+volMult = input.float(1.5, "Volume Multiplier")
+
+highestHigh = ta.highest(high, lookback)
+lowestLow = ta.lowest(low, lookback)
+avgVol = ta.sma(volume, 20)
+
+isBullBreak = ta.crossover(close, highestHigh[1]) and volume > avgVol * volMult
+isBearBreak = ta.crossunder(close, lowestLow[1]) and volume > avgVol * volMult
+
+if (isBullBreak)
+    strategy.entry("Break Long", strategy.long)
+
+if (isBearBreak)
+    strategy.close("Break Long")
+`,
+  },
 ];
 
 const STORAGE_KEY = "chart_custom_scripts";

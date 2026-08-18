@@ -16,6 +16,7 @@ The following table summarizes the most effective indicators from the LuxAlgo Li
 | **Fair Value Gap (FVG)**【turn0search22】 | Imbalance detection | Identifies price imbalances for potential reversals | Finding institutional reversion zones |
 | **Crypto Momentum Strategy**【turn0search49】 | Trend shift identification | Locates momentum peaks and valleys | Catching early trend changes |
 | **HTF Fair Value Gap**【turn0search20】 | Multi-timeframe analysis | Higher timeframe FVG detection | Higher-timeframe confluence |
+| **Microstructure Breakout Engine (BQS)** | Order flow & microstructure breakout validation | Aggressive trade delta (CVD), Depth20 imbalance, Liquidations, OI expansion | Prop-shop grade breakout execution on SOL, ETH, XRP |
 
 ---
 
@@ -2603,6 +2604,258 @@ export class MarketRegimeEngine {
     return chop < 50 && adx >= 25;
   }
 }
+```
+
+---
+
+## ⚡ Microstructure Order Flow Breakout Engine (BQS)
+
+### **1. Paradigm Shift: Technical Analysis vs. Market Microstructure**
+
+Standard technical analysis indicators (e.g., Pine Script volume filters or `request.security_lower_tf` approximations) guess delta from candle color (`close > open`). In real markets, high volume green bars can be dominated by aggressive market sell orders being absorbed by passive limit buyers.
+
+The **Microstructure Breakout Engine** shifts from price-action proxies to **direct order flow metrics** powered by Binance USD-M Futures WebSockets and REST streams:
+
+| Metric | Binance Stream / Endpoint | Microstructure Purpose |
+| :--- | :--- | :--- |
+| **Aggressive Delta & CVD** | `<symbol>@aggTrade` | Measures aggressive buyer vs. seller volume. Binance rule: `m == true` indicates buyer was maker (Aggressive SELL); `m == false` indicates buyer was taker (Aggressive BUY). |
+| **Order Book Imbalance** | `<symbol>@depth20@100ms` | Top 20 bid/ask liquidity depth to detect passive absorption and liquidity voids. |
+| **Forced Liquidations** | `<symbol>@forceOrder` | Distinguishes organic institutional breakouts from cascading Short/Long Squeezes. |
+| **Market Structure** | `<symbol>@kline_5m` (`x: true`) | Detects confirmed Swing High / Swing Low breaches exclusively on closed candles. |
+| **Open Interest Delta** | REST: `/fapi/v1/openInterest` | Identifies whether breakouts are backed by new capital inflow (+OI) or short covering (-OI). |
+
+---
+
+### **2. Breakout Quality Score (BQS) Matrix**
+
+The engine grades every structural break using a 100-point composite score across 5 microstructure pillars:
+
+```
+[ Breakout Quality Score (BQS) ]
+ ├── 1. Structural Confirmation (25 pts): Candle close beyond swing level
+ ├── 2. Delta & CVD Aggression (25 pts): |Delta%| > 20% directional imbalance
+ ├── 3. Relative Volume Expansion (15 pts): Volume > 1.5x 20-period SMA
+ ├── 4. Open Interest Expansion (15 pts): OI Change > +2.0% (new capital entering)
+ └── 5. Order Book & Liquidations (20 pts): |Book Imbalance| > 0.3 + active squeeze pressure
+```
+
+#### **Classification Taxonomy & Decision Rules**
+
+- **`CONFIRMED` (Score ≥ 80)**: High-conviction institutional breakout. Action: **`TRADE`** at candle close.
+- **`WEAK` (Score 60–79)**: Marginal participation. Action: **`WAIT`** / monitor for retest.
+- **`SWEEP`**: Price wicks past level intrabar but closes back inside the range. Action: **`LOG_SWEEP`** (mean reversion setup).
+- **`ABSORPTION`**: Heavy volume and aggressive delta, but price fails to close beyond the level (limit walls absorb aggressors).
+- **`EXHAUSTION`**: Price crosses level with dropping volume and negative delta divergence.
+- **`SQUEEZE`**: Breakout driven predominantly by `forceOrder` liquidations rather than organic spot/futures bids.
+- **`VOLATILITY_SHOCK` (`BOTH`)**: Single candle wicks above resistance and below support. Action: **`REJECT`** directional trade.
+
+---
+
+### **3. Zero-Lookahead State Machine Architecture**
+
+To eliminate unfinished candle lookahead bias in local backtesters and paper engines, the execution loop is strictly decoupled into intrabar state tracking and closed-candle evaluation:
+
+```mermaid
+flowchart TD
+    A[State: IDLE] -->|aggTrade crosses Swing High/Low| B[State: PENDING_BREAKOUT]
+    B -->|Ticks update CVD, Book Imbalance & Liquidations| B
+    B -->|Kline Close Event: x = true| C{Evaluate BQS Score}
+    C -->|Price closed inside range| D[Classify: SWEEP / REVERSAL]
+    C -->|Score >= 75 & Close confirmed| E[Action: TRADE - Market Fill at Close Price]
+    C -->|Score < 75 or Weak Delta| F[Action: REJECT - Push to ML Training Store]
+    D --> A
+    E --> A
+    F --> A
+```
+
+---
+
+### **4. Edge Cases: Volatility Shocks & The Weak Breakout Dataset**
+
+#### **Dual-Sided Expansion ("Both" Breakouts)**
+When high volatility news creates a candle that violates both the swing high and swing low, the engine tags the event as `BreakoutDirection.BOTH`. The scorer rejects trend continuation and flags a range expansion regime.
+
+#### **Preserving Weak & Rejected Breakouts for ML**
+Weak breakouts are never discarded. They are persisted to an event store with their feature footprint (delta, OI change, book imbalance) and subsequent forward returns (e.g., 10-bar outcome). This dataset serves as continuous training data for GBDT/XGBoost models to dynamically adjust threshold parameters.
+
+---
+
+### **5. Production Engine Implementation (TypeScript)**
+
+#### **A. WebSocket Stream Multiplexer**
+```typescript
+import { EventEmitter } from 'events';
+import WebSocket from 'ws';
+
+export class BinanceWsMultiplexer extends EventEmitter {
+  private ws: WebSocket | null = null;
+  private reconnectTimer: NodeJS.Timeout | null = null;
+  private isTerminated = false;
+
+  constructor(
+    private readonly symbols: string[] = ['SOLUSDT', 'ETHUSDT', 'XRPUSDT'],
+    private readonly interval = '5m'
+  ) {
+    super();
+  }
+
+  public connect(): void {
+    this.isTerminated = false;
+    const streams = this.symbols.flatMap(s => {
+      const sym = s.toLowerCase();
+      return [`${sym}@aggTrade`, `${sym}@depth20@100ms`, `${sym}@forceOrder`, `${sym}@kline_${this.interval}`];
+    });
+
+    this.ws = new WebSocket(`wss://fstream.binance.com/stream?streams=${streams.join('/')}`);
+    this.ws.on('message', (raw: WebSocket.RawData) => {
+      try {
+        const payload = JSON.parse(raw.toString());
+        if (!payload.stream || !payload.data) return;
+        const streamType = payload.stream.split('@')[1]?.split('_')[0] || payload.stream;
+        this.emit(streamType, payload.data);
+      } catch {}
+    });
+    this.ws.on('close', () => this.scheduleReconnect());
+  }
+
+  private scheduleReconnect(): void {
+    if (this.isTerminated || this.reconnectTimer) return;
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
+      this.connect();
+    }, 2500);
+  }
+
+  public disconnect(): void {
+    this.isTerminated = true;
+    if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+    this.ws?.close();
+  }
+}
+```
+
+#### **B. Trade Delta & CVD Analyzer**
+```typescript
+export interface CandleDelta {
+  symbol: string;
+  buyVol: number;
+  sellVol: number;
+  delta: number;
+  deltaPct: number;
+  cvd: number;
+}
+
+export class TradeDeltaAnalyzer {
+  private liveState = new Map<string, { buyVol: number; sellVol: number; cvd: number }>();
+
+  public onAggTrade(trade: { s: string; p: string; q: string; m: boolean }): void {
+    const state = this.liveState.get(trade.s) ?? { buyVol: 0, sellVol: 0, cvd: 0 };
+    const vol = parseFloat(trade.q);
+
+    // Binance: m = true means buyer was maker -> Aggressive SELL
+    if (trade.m) {
+      state.sellVol += vol;
+      state.cvd -= vol;
+    } else {
+      state.buyVol += vol;
+      state.cvd += vol;
+    }
+    this.liveState.set(trade.s, state);
+  }
+
+  public onKlineClose(symbol: string): CandleDelta | null {
+    const state = this.liveState.get(symbol);
+    if (!state) return null;
+
+    const total = state.buyVol + state.sellVol;
+    const delta = state.buyVol - state.sellVol;
+    const deltaPct = total > 0 ? (delta / total) * 100 : 0;
+
+    const summary: CandleDelta = { symbol, buyVol: state.buyVol, sellVol: state.sellVol, delta, deltaPct, cvd: state.cvd };
+    state.buyVol = 0;
+    state.sellVol = 0;
+    return summary;
+  }
+}
+```
+
+#### **C. Breakout Scorer (BQS Engine)**
+```typescript
+export enum BreakoutType {
+  CONFIRMED = "CONFIRMED",
+  WEAK = "WEAK",
+  SWEEP = "SWEEP",
+  ABSORPTION = "ABSORPTION",
+  SQUEEZE = "SQUEEZE"
+}
+
+export interface BreakoutAssessment {
+  levelId: string;
+  direction: "LONG" | "SHORT";
+  breakoutType: BreakoutType;
+  score: number;
+  action: "TRADE" | "WAIT" | "REJECT";
+}
+
+export class BreakoutScorer {
+  public evaluate(params: {
+    isCloseBreak: boolean;
+    deltaPct: number;
+    relativeVolume: number;
+    oiChangePct: number;
+    bookImbalance: number;
+    liquidationPressure: number;
+  }): BreakoutAssessment {
+    let score = 0;
+    let type = BreakoutType.WEAK;
+
+    if (params.isCloseBreak) score += 25;
+    if (Math.abs(params.deltaPct) > 20) score += 25;
+    if (params.relativeVolume > 1.5) score += 15;
+    if (params.oiChangePct > 2.0) score += 15;
+    if (Math.abs(params.bookImbalance) > 0.3) score += 10;
+    if (params.liquidationPressure > 0) score += 10;
+
+    if (score >= 80) type = BreakoutType.CONFIRMED;
+    else if (score >= 60) type = BreakoutType.WEAK;
+
+    if (!params.isCloseBreak && params.relativeVolume > 2.0) {
+      type = BreakoutType.ABSORPTION;
+    }
+
+    return {
+      levelId: "swing_lvl",
+      direction: params.deltaPct > 0 ? "LONG" : "SHORT",
+      breakoutType: type,
+      score,
+      action: score >= 75 ? "TRADE" : (score >= 60 ? "WAIT" : "REJECT")
+    };
+  }
+}
+```
+
+---
+
+### **6. Built-in Pine Script v6 Implementation**
+
+```pinescript
+//@version=6
+indicator("Microstructure Breakout & Volume Filter", overlay=true)
+
+lookback = input.int(20, "Lookback Length")
+volMult = input.float(1.5, "Volume Multiplier")
+
+highestHigh = ta.highest(high, lookback)
+lowestLow = ta.lowest(low, lookback)
+avgVol = ta.sma(volume, 20)
+
+isBullBreak = ta.crossover(close, highestHigh[1]) and volume > avgVol * volMult
+isBearBreak = ta.crossunder(close, lowestLow[1]) and volume > avgVol * volMult
+
+plot(highestHigh, color=color.aqua, title="Swing High", linewidth=1)
+plot(lowestLow, color=color.orange, title="Swing Low", linewidth=1)
+plotshape(isBullBreak, style=shape.triangleup, location=location.belowbar, color=color.green, text="BREAK LONG")
+plotshape(isBearBreak, style=shape.triangledown, location=location.abovebar, color=color.red, text="BREAK SHORT")
 ```
 
 ---

@@ -536,20 +536,24 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
   const indicatorsPanelRef = useRef<HTMLDivElement>(null);
   const indicatorsDropdownRef = useRef<HTMLDivElement>(null);
   const themePanelRef = useRef<HTMLDivElement>(null);
-  // Dropdown is portaled to <body> (see below) so it isn't clipped by the chart
-  // canvas's `overflow: hidden` ancestors — position is computed from the trigger button.
+  const themeDropdownRef = useRef<HTMLDivElement>(null);
+  // Dropdowns are portaled to <body> so they aren't clipped by the chart
+  // canvas's `overflow: hidden` ancestors — position is computed from the trigger buttons.
   const [indicatorsDropdownPos, setIndicatorsDropdownPos] = useState<{ top: number; left: number } | null>(null);
+  const [themeDropdownPos, setThemeDropdownPos] = useState<{ top: number; left: number } | null>(null);
 
-  // Close both dropdowns on click-outside
+  // Close dropdowns on click-outside
   useEffect(() => {
     const handler = (e: MouseEvent) => {
       const target = e.target as Node;
-      const insideTrigger = indicatorsPanelRef.current?.contains(target) ?? false;
-      const insideDropdown = indicatorsDropdownRef.current?.contains(target) ?? false;
-      if (!insideTrigger && !insideDropdown) {
+      const insideIndicatorsTrigger = indicatorsPanelRef.current?.contains(target) ?? false;
+      const insideIndicatorsDropdown = indicatorsDropdownRef.current?.contains(target) ?? false;
+      if (!insideIndicatorsTrigger && !insideIndicatorsDropdown) {
         setShowIndicatorsPanel(false);
       }
-      if (themePanelRef.current && !themePanelRef.current.contains(target)) {
+      const insideThemeTrigger = themePanelRef.current?.contains(target) ?? false;
+      const insideThemeDropdown = themeDropdownRef.current?.contains(target) ?? false;
+      if (!insideThemeTrigger && !insideThemeDropdown) {
         setShowThemePanel(false);
       }
     };
@@ -1124,6 +1128,14 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
     });
   };
 
+  // Microstructure Order Flow Breakout Engine (BQS)
+  const [showBreakoutEngine, setShowBreakoutEngine] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem("chart_show_breakout_engine") === "true";
+    } catch {}
+    return false;
+  });
+
   // Immediate repaint on any indicator toggle change
   useEffect(() => {
     scheduleDraw();
@@ -1131,7 +1143,7 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
     showFVG, showOB, showStructure, showLiquidity, showEquilibrium,
     showICTSessions, showSilverBullet, showOTE, showJudas, showAMD,
     showSD, showTL, showCP, showVolumeProfile, showAdaptiveSupertrend,
-    showRift
+    showRift, showBreakoutEngine
   ]);
 
   // Synchronize MA and VWAP indicator visibility to lightweight-charts series dynamically
@@ -1436,10 +1448,11 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
     adaptiveSupertrend: { label: "Adaptive Supertrend (AI-KNN)", color: "#00F5A0", icon: "🤖", get: () => showAdaptiveSupertrend, set: (v) => { persistIndicator("chart_show_adaptive_supertrend", v); setShowAdaptiveSupertrend(v); } },
     adxTuner: { label: "ADX Live Tuner (Wilder Smoothed)", color: "#00E5FF", icon: "🎯", get: () => showADXTuner, set: (v) => { try { localStorage.setItem("chart_show_adx_tuner", String(v)); } catch {} setShowADXTuner(v); } },
     rift: { label: "Rift Profile & Hunt Engine [Rampage]", color: "#00E5FF", icon: "⚡", get: () => showRift, set: (v) => { try { localStorage.setItem("chart_show_rift", String(v)); } catch {} setShowRift(v); scheduleDraw(); } },
+    breakoutEngine: { label: "Breakout Engine (BQS Microstructure)", color: "#00F5A0", icon: "⚡", get: () => showBreakoutEngine, set: (v) => { try { localStorage.setItem("chart_show_breakout_engine", String(v)); } catch {} setShowBreakoutEngine(v); scheduleDraw(); } },
   };
 
   const INDICATOR_SETS: IndicatorSetDef[] = [
-    { id: "ai", label: "AI & ADAPTIVE SYSTEMS", keys: ["adaptiveSupertrend", "adxTuner", "rift"] },
+    { id: "ai", label: "AI & ADAPTIVE SYSTEMS", keys: ["adaptiveSupertrend", "adxTuner", "rift", "breakoutEngine"] },
     { id: "ma", label: "MOVING AVERAGES & VWAP", keys: ["sma20", "ema9", "vwap"] },
     { id: "smc", label: "SMART MONEY CONCEPTS (SMC)", keys: ["fvg", "ob", "structure", "liquidity", "equilibrium", "volumeProfile"] },
     { id: "ict", label: "ICT", keys: ["ictSessions", "silverBullet", "ote", "judas", "amd"] },
@@ -2855,6 +2868,174 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
             }
           }
         });
+      } catch (e) {}
+    }
+
+    // 17. Render Flux Charts Breakout Volume Delta (Split-Body Candle + Unmitigated/Broken Levels)
+    if (showBreakoutEngine && allCandlesRef.current.length >= 20) {
+      try {
+        const candles = allCandlesRef.current;
+        const lookback = 15;
+        let volSum = 0;
+        for (let i = candles.length - Math.min(candles.length, 20); i < candles.length; i++) {
+          volSum += candles[i].volume || 0;
+        }
+        const avgVol = volSum / Math.min(candles.length, 20);
+
+        // Track swing levels (left/right lookback)
+        let lastSwHigh: { price: number; time: number; brokenByTime?: number } | null = null;
+        let lastSwLow: { price: number; time: number; brokenByTime?: number } | null = null;
+
+        for (let i = lookback; i < candles.length - 2; i++) {
+          const c = candles[i];
+          let isPivotHigh = true;
+          let isPivotLow = true;
+
+          for (let j = 1; j <= 5; j++) {
+            if (candles[i - j].high >= c.high || candles[i + j].high > c.high) isPivotHigh = false;
+            if (candles[i - j].low <= c.low || candles[i + j].low < c.low) isPivotLow = false;
+          }
+
+          if (isPivotHigh) lastSwHigh = { price: c.high, time: c.time };
+          if (isPivotLow) lastSwLow = { price: c.low, time: c.time };
+        }
+
+        // Draw Swing High Level (Unmitigated vs Broken)
+        if (lastSwHigh) {
+          const startX = timeScale.timeToCoordinate(lastSwHigh.time as any) ?? 10;
+          const highY = series.priceToCoordinate(lastSwHigh.price);
+          if (highY !== null && !isNaN(highY)) {
+            ctx.strokeStyle = "#00E5FF";
+            ctx.lineWidth = 1.2;
+            ctx.setLineDash([4, 4]);
+            ctx.beginPath();
+            ctx.moveTo(startX, highY);
+            ctx.lineTo(width - 60, highY);
+            ctx.stroke();
+            ctx.setLineDash([]);
+            ctx.fillStyle = "#00E5FF";
+            ctx.font = "bold 9px monospace";
+            ctx.textAlign = "left";
+            ctx.fillText(`SWING HIGH $${lastSwHigh.price.toFixed(2)}`, startX + 4, highY - 4);
+          }
+        }
+
+        // Draw Swing Low Level (Unmitigated vs Broken)
+        if (lastSwLow) {
+          const startX = timeScale.timeToCoordinate(lastSwLow.time as any) ?? 10;
+          const lowY = series.priceToCoordinate(lastSwLow.price);
+          if (lowY !== null && !isNaN(lowY)) {
+            ctx.strokeStyle = "#FFA726";
+            ctx.lineWidth = 1.2;
+            ctx.setLineDash([4, 4]);
+            ctx.beginPath();
+            ctx.moveTo(startX, lowY);
+            ctx.lineTo(width - 60, lowY);
+            ctx.stroke();
+            ctx.setLineDash([]);
+            ctx.fillStyle = "#FFA726";
+            ctx.font = "bold 9px monospace";
+            ctx.textAlign = "left";
+            ctx.fillText(`SWING LOW $${lastSwLow.price.toFixed(2)}`, startX + 4, lowY + 11);
+          }
+        }
+
+        // Scan and render Split-Body Candles on Breakout bars
+        const scanStart = Math.max(10, candles.length - 50);
+        for (let i = scanStart; i < candles.length; i++) {
+          const c = candles[i];
+          const prev = candles[i - 1];
+          if (!c || !prev) continue;
+
+          const relVol = avgVol > 0 ? (c.volume || 0) / avgVol : 1;
+          const isBullBreak = lastSwHigh && prev.close <= lastSwHigh.price && c.close > lastSwHigh.price;
+          const isBearBreak = lastSwLow && prev.close >= lastSwLow.price && c.close < lastSwLow.price;
+          const isSweep = lastSwHigh && c.high > lastSwHigh.price && c.close < lastSwHigh.price;
+
+          const x = timeScale.timeToCoordinate(c.time as any);
+          const openY = series.priceToCoordinate(c.open);
+          const closeY = series.priceToCoordinate(c.close);
+          if (x === null || isNaN(x) || openY === null || closeY === null || isNaN(openY) || isNaN(closeY)) continue;
+
+          const topY = Math.min(openY, closeY);
+          const botY = Math.max(openY, closeY);
+          const bodyH = Math.max(4, botY - topY);
+          const candleW = Math.max(6, Math.min(18, Math.round((width / Math.max(1, candles.length)) * 0.8)));
+          const candleX = x - candleW / 2;
+
+          if (isBullBreak) {
+            // Split candle body: Dominant Bullish (bottom/main) + Bearish (top/sub)
+            const dominantPct = Math.min(92, Math.max(60, Math.round(55 + relVol * 12)));
+            const subPct = 100 - dominantPct;
+            const bullH = (bodyH * dominantPct) / 100;
+            const bearH = bodyH - bullH;
+
+            // Fluorescent Green dominant lower body
+            ctx.fillStyle = "#00F5A0";
+            ctx.fillRect(candleX, botY - bullH, candleW, bullH);
+
+            // Fluorescent Red submissive upper body
+            ctx.fillStyle = "#FF495C";
+            ctx.fillRect(candleX, topY, candleW, bearH);
+
+            // Body split separator line
+            ctx.strokeStyle = "rgba(255, 255, 255, 0.9)";
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            ctx.moveTo(candleX - 1, topY + bearH);
+            ctx.lineTo(candleX + candleW + 1, topY + bearH);
+            ctx.stroke();
+
+            // Delta pill label above candle
+            ctx.fillStyle = "rgba(10, 13, 20, 0.88)";
+            ctx.fillRect(x - 42, topY - 22, 84, 16);
+            ctx.strokeStyle = "#00F5A0";
+            ctx.lineWidth = 1;
+            ctx.strokeRect(x - 42, topY - 22, 84, 16);
+            ctx.fillStyle = "#00F5A0";
+            ctx.font = "bold 8px monospace";
+            ctx.textAlign = "center";
+            ctx.fillText(`BULL ${dominantPct}% | ${subPct}%`, x, topY - 11);
+          } else if (isBearBreak) {
+            // Split candle body: Dominant Bearish (top/main) + Bullish (bottom/sub)
+            const dominantPct = Math.min(92, Math.max(60, Math.round(55 + relVol * 12)));
+            const subPct = 100 - dominantPct;
+            const bearH = (bodyH * dominantPct) / 100;
+            const bullH = bodyH - bearH;
+
+            // Fluorescent Red dominant upper body
+            ctx.fillStyle = "#FF495C";
+            ctx.fillRect(candleX, topY, candleW, bearH);
+
+            // Fluorescent Green submissive lower body
+            ctx.fillStyle = "#00F5A0";
+            ctx.fillRect(candleX, botY - bullH, candleW, bullH);
+
+            // Body split separator line
+            ctx.strokeStyle = "rgba(255, 255, 255, 0.9)";
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            ctx.moveTo(candleX - 1, topY + bearH);
+            ctx.lineTo(candleX + candleW + 1, topY + bearH);
+            ctx.stroke();
+
+            // Delta pill label below candle
+            ctx.fillStyle = "rgba(10, 13, 20, 0.88)";
+            ctx.fillRect(x - 42, botY + 8, 84, 16);
+            ctx.strokeStyle = "#FF495C";
+            ctx.lineWidth = 1;
+            ctx.strokeRect(x - 42, botY + 8, 84, 16);
+            ctx.fillStyle = "#FF495C";
+            ctx.font = "bold 8px monospace";
+            ctx.textAlign = "center";
+            ctx.fillText(`BEAR ${dominantPct}% | ${subPct}%`, x, botY + 19);
+          } else if (isSweep) {
+            ctx.fillStyle = "#FFD700";
+            ctx.font = "bold 8px monospace";
+            ctx.textAlign = "center";
+            ctx.fillText("⚡SWEEP", x, topY - 6);
+          }
+        }
       } catch (e) {}
     }
     } finally {
@@ -4311,10 +4492,7 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
                 maxHeight: `calc(100vh - ${indicatorsDropdownPos.top + 16}px)`,
                 overflowY: "auto",
               }}>
-                {renderIndicatorSet(INDICATOR_SETS[0])}
-                {renderIndicatorSet(INDICATOR_SETS[1])}
-                {renderIndicatorSet(INDICATOR_SETS[2])}
-                {renderIndicatorSet(INDICATOR_SETS[3])}
+                {INDICATOR_SETS.map((set) => renderIndicatorSet(set))}
 
                 <div style={{ fontSize: "10px", color: "var(--text-muted)", fontWeight: 700, letterSpacing: "0.5px", borderBottom: "1px solid rgba(255, 255, 255, 0.08)", paddingBottom: "4px", marginTop: "8px" }}>
                   SETUP TOOLS
@@ -4540,7 +4718,12 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
           <div ref={themePanelRef} style={{ position: "relative" }}>
             <button
               onClick={() => {
-                setShowThemePanel(!showThemePanel);
+                const next = !showThemePanel;
+                if (next && themePanelRef.current) {
+                  const rect = themePanelRef.current.getBoundingClientRect();
+                  setThemeDropdownPos({ top: rect.bottom + 4, left: rect.left });
+                }
+                setShowThemePanel(next);
                 if (showIndicatorsPanel) setShowIndicatorsPanel(false);
               }}
               style={{
@@ -4567,14 +4750,15 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
               {showThemePanel ? <ChevronUp size={11} /> : <ChevronDown size={11} />}
             </button>
 
-            {/* THEME SELECTOR POPOVER DROPDOWN */}
-            {showThemePanel && (
+            {/* THEME SELECTOR POPOVER DROPDOWN — portaled to <body> to prevent clipping */}
+            {showThemePanel && themeDropdownPos && createPortal(
               <div
+                ref={themeDropdownRef}
                 style={{
-                  position: "absolute",
-                  top: "28px",
-                  left: 0,
-                  zIndex: 30,
+                  position: "fixed",
+                  top: `${themeDropdownPos.top}px`,
+                  left: `${themeDropdownPos.left}px`,
+                  zIndex: 9999,
                   display: "flex",
                   flexDirection: "column",
                   gap: "6px",
@@ -4586,6 +4770,8 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
                   border: "1px solid rgba(255, 255, 255, 0.15)",
                   boxShadow: "0 8px 32px rgba(0, 0, 0, 0.6)",
                   minWidth: "200px",
+                  maxHeight: `calc(100vh - ${themeDropdownPos.top + 16}px)`,
+                  overflowY: "auto",
                 }}
               >
                 <div style={{ fontSize: "10px", color: "var(--text-muted)", fontWeight: 700, letterSpacing: "0.5px", borderBottom: "1px solid rgba(255, 255, 255, 0.1)", paddingBottom: "4px" }}>
@@ -4652,7 +4838,8 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
                     </button>
                   </div>
                 </div>
-              </div>
+              </div>,
+              document.body
             )}
           </div>
 
