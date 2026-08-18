@@ -2892,12 +2892,24 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
         }
         const candleW = Math.max(5, Math.min(28, Math.round(barSpacing * 0.76)));
 
+        // Calculate 20-period average volume for RVol filtering
+        let volSum = 0;
+        const volLookback = Math.min(candles.length, 20);
+        for (let i = candles.length - volLookback; i < candles.length; i++) {
+          volSum += candles[i].volume || 0;
+        }
+        const avgVol = (volSum / Math.max(1, volLookback)) || 1;
+
         // Detect all historical swing points (Left=5, Right=5)
         interface SwingLvl {
           type: "HIGH" | "LOW";
           price: number;
           time: number;
           brokenTime: number | null;
+          isValid: boolean;
+          dominantPct: number;
+          subPct: number;
+          sweepTime: number | null;
         }
         const swingLevels: SwingLvl[] = [];
         const swL = 5, swR = 5;
@@ -2913,23 +2925,55 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
             if (candles[i + j].high >= c.high) isH = false;
             if (candles[i + j].low <= c.low) isL = false;
           }
-          if (isH) swingLevels.push({ type: "HIGH", price: c.high, time: c.time, brokenTime: null });
-          if (isL) swingLevels.push({ type: "LOW", price: c.low, time: c.time, brokenTime: null });
+          if (isH) swingLevels.push({ type: "HIGH", price: c.high, time: c.time, brokenTime: null, isValid: false, dominantPct: 65, subPct: 35, sweepTime: null });
+          if (isL) swingLevels.push({ type: "LOW", price: c.low, time: c.time, brokenTime: null, isValid: false, dominantPct: 65, subPct: 35, sweepTime: null });
         }
 
-        // Match breakouts to levels
+        // Match breakouts to levels with Strict 5-Layer Validation
         for (const lvl of swingLevels) {
           for (let i = 0; i < candles.length; i++) {
             const c = candles[i];
             if (c.time <= lvl.time) continue;
             const prev = candles[i - 1];
-            if (lvl.type === "HIGH" && prev && prev.close <= lvl.price && c.close > lvl.price) {
-              lvl.brokenTime = c.time;
-              break;
-            }
-            if (lvl.type === "LOW" && prev && prev.close >= lvl.price && c.close < lvl.price) {
-              lvl.brokenTime = c.time;
-              break;
+            if (!prev) continue;
+
+            const bodyH = Math.abs(c.close - c.open);
+            const rangeH = Math.max(0.0001, c.high - c.low);
+            const bodyRatio = bodyH / rangeH;
+            const rVol = (c.volume || 1) / avgVol;
+
+            if (lvl.type === "HIGH") {
+              const isCloseBeyond = prev.close <= lvl.price && c.close > lvl.price;
+              const isGreenCandle = c.close > c.open;
+              const isSolidBody = bodyRatio >= 0.35;
+              const bullPct = Math.min(92, Math.max(50, Math.round(55 + (bodyRatio * 25) + Math.min(15, Math.max(0, (rVol - 1) * 8)))));
+              const isDominant = bullPct >= 60;
+
+              if (isCloseBeyond && isGreenCandle && isSolidBody && isDominant) {
+                lvl.brokenTime = c.time;
+                lvl.isValid = true;
+                lvl.dominantPct = bullPct;
+                lvl.subPct = 100 - bullPct;
+                break;
+              } else if (c.high > lvl.price && c.close < lvl.price && !lvl.brokenTime) {
+                lvl.sweepTime = c.time;
+              }
+            } else if (lvl.type === "LOW") {
+              const isCloseBeyond = prev.close >= lvl.price && c.close < lvl.price;
+              const isRedCandle = c.close < c.open;
+              const isSolidBody = bodyRatio >= 0.35;
+              const bearPct = Math.min(92, Math.max(50, Math.round(55 + (bodyRatio * 25) + Math.min(15, Math.max(0, (rVol - 1) * 8)))));
+              const isDominant = bearPct >= 60;
+
+              if (isCloseBeyond && isRedCandle && isSolidBody && isDominant) {
+                lvl.brokenTime = c.time;
+                lvl.isValid = true;
+                lvl.dominantPct = bearPct;
+                lvl.subPct = 100 - bearPct;
+                break;
+              } else if (c.low < lvl.price && c.close > lvl.price && !lvl.brokenTime) {
+                lvl.sweepTime = c.time;
+              }
             }
           }
         }
@@ -2963,9 +3007,9 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
           }
         }
 
-        // Render Split-Body Candles & Labels on Breakout Bars
+        // Render Split-Body Candles & Labels ONLY on VALID Breakout Bars
         for (const lvl of recentLevels) {
-          if (!lvl.brokenTime) continue;
+          if (!lvl.isValid || !lvl.brokenTime) continue;
           const cIdx = candles.findIndex((c) => c.time === lvl.brokenTime);
           if (cIdx < 0) continue;
           const c = candles[cIdx];
@@ -2984,8 +3028,8 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
 
           if (lvl.type === "HIGH" && c.close > c.open) {
             // Bullish Dominant Breakout
-            const bullPct = 66.7;
-            const bearPct = 33.3;
+            const bullPct = lvl.dominantPct;
+            const bearPct = lvl.subPct;
             const bullVol = barVol * (bullPct / 100);
             const bearVol = barVol * (bearPct / 100);
 
@@ -3050,8 +3094,8 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
             ctx.fillText(actionText, x, actionY + 2);
           } else if (lvl.type === "LOW" && c.close < c.open) {
             // Bearish Dominant Breakout
-            const bearPct = 71.6;
-            const bullPct = 28.4;
+            const bearPct = lvl.dominantPct;
+            const bullPct = lvl.subPct;
             const bearVol = barVol * (bearPct / 100);
             const bullVol = barVol * (bullPct / 100);
 
@@ -3117,34 +3161,34 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
           }
         }
 
-        // Scan for Liquidity Sweeps (Intrabar breach of recent level that closed inside)
-        const recentScan = candles.slice(-25);
-        for (const c of recentScan) {
-          for (const lvl of recentLevels) {
-            if (lvl.brokenTime) continue; // Already confirmed broken
-            const x = timeScale.timeToCoordinate(c.time as any);
-            if (x === null || isNaN(x)) continue;
+        // Render Liquidity Sweeps on Unbroken Levels
+        for (const lvl of recentLevels) {
+          if (lvl.brokenTime || !lvl.sweepTime) continue;
+          const sIdx = candles.findIndex((c) => c.time === lvl.sweepTime);
+          if (sIdx < 0) continue;
+          const c = candles[sIdx];
+          const x = timeScale.timeToCoordinate(c.time as any);
+          if (x === null || isNaN(x)) continue;
 
-            if (lvl.type === "HIGH" && c.high > lvl.price && c.close < lvl.price) {
-              const y = series.priceToCoordinate(c.high);
-              if (y !== null && !isNaN(y)) {
-                ctx.fillStyle = "rgba(168, 85, 247, 0.92)";
-                ctx.fillRect(x - 55, y - 22, 110, 15);
-                ctx.fillStyle = "#FFFFFF";
-                ctx.font = "bold 8px monospace";
-                ctx.textAlign = "center";
-                ctx.fillText("⚡ SWEEP [ACTION: FADE]", x, y - 11);
-              }
-            } else if (lvl.type === "LOW" && c.low < lvl.price && c.close > lvl.price) {
-              const y = series.priceToCoordinate(c.low);
-              if (y !== null && !isNaN(y)) {
-                ctx.fillStyle = "rgba(168, 85, 247, 0.92)";
-                ctx.fillRect(x - 55, y + 8, 110, 15);
-                ctx.fillStyle = "#FFFFFF";
-                ctx.font = "bold 8px monospace";
-                ctx.textAlign = "center";
-                ctx.fillText("⚡ SWEEP [ACTION: FADE]", x, y + 19);
-              }
+          if (lvl.type === "HIGH") {
+            const y = series.priceToCoordinate(c.high);
+            if (y !== null && !isNaN(y)) {
+              ctx.fillStyle = "rgba(168, 85, 247, 0.92)";
+              ctx.fillRect(x - 55, y - 22, 110, 15);
+              ctx.fillStyle = "#FFFFFF";
+              ctx.font = "bold 8px monospace";
+              ctx.textAlign = "center";
+              ctx.fillText("⚡ SWEEP [ACTION: FADE]", x, y - 11);
+            }
+          } else if (lvl.type === "LOW") {
+            const y = series.priceToCoordinate(c.low);
+            if (y !== null && !isNaN(y)) {
+              ctx.fillStyle = "rgba(168, 85, 247, 0.92)";
+              ctx.fillRect(x - 55, y + 8, 110, 15);
+              ctx.fillStyle = "#FFFFFF";
+              ctx.font = "bold 8px monospace";
+              ctx.textAlign = "center";
+              ctx.fillText("⚡ SWEEP [ACTION: FADE]", x, y + 19);
             }
           }
         }
