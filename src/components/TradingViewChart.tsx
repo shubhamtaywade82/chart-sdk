@@ -199,8 +199,8 @@ export const CANDLE_THEMES: Record<string, CandleTheme> = {
     name: "Cyber Emerald",
     upColor: "#00F5A0",
     downColor: "#FF495C",
-    volUpColor: "rgba(0, 245, 160, 0.35)",
-    volDownColor: "rgba(255, 73, 92, 0.35)",
+    volUpColor: "rgba(0, 245, 160, 0.28)",
+    volDownColor: "rgba(255, 73, 92, 0.28)",
     priceLineColor: "#00F5A0",
   },
   classic: {
@@ -208,17 +208,26 @@ export const CANDLE_THEMES: Record<string, CandleTheme> = {
     name: "Classic TV",
     upColor: "#089981",
     downColor: "#F23645",
-    volUpColor: "rgba(8, 153, 129, 0.35)",
-    volDownColor: "rgba(242, 54, 69, 0.35)",
+    volUpColor: "rgba(8, 153, 129, 0.28)",
+    volDownColor: "rgba(242, 54, 69, 0.28)",
     priceLineColor: "#089981",
+  },
+  colorblind: {
+    id: "colorblind",
+    name: "Colorblind Pro (Teal/Amber)",
+    upColor: "#00B4D8",
+    downColor: "#FB8500",
+    volUpColor: "rgba(0, 180, 216, 0.28)",
+    volDownColor: "rgba(251, 133, 0, 0.28)",
+    priceLineColor: "#00B4D8",
   },
   ice: {
     id: "ice",
     name: "Electric Ice",
     upColor: "#00E5FF",
     downColor: "#78909C",
-    volUpColor: "rgba(0, 229, 255, 0.35)",
-    volDownColor: "rgba(120, 144, 156, 0.35)",
+    volUpColor: "rgba(0, 229, 255, 0.28)",
+    volDownColor: "rgba(120, 144, 156, 0.28)",
     priceLineColor: "#00E5FF",
   },
   gold: {
@@ -226,8 +235,8 @@ export const CANDLE_THEMES: Record<string, CandleTheme> = {
     name: "Solar Gold",
     upColor: "#FFB800",
     downColor: "#A855F7",
-    volUpColor: "rgba(255, 184, 0, 0.35)",
-    volDownColor: "rgba(168, 85, 247, 0.35)",
+    volUpColor: "rgba(255, 184, 0, 0.28)",
+    volDownColor: "rgba(168, 85, 247, 0.28)",
     priceLineColor: "#FFB800",
   },
   neon: {
@@ -235,8 +244,8 @@ export const CANDLE_THEMES: Record<string, CandleTheme> = {
     name: "Midnight Neon",
     upColor: "#3B82F6",
     downColor: "#EC4899",
-    volUpColor: "rgba(59, 130, 246, 0.35)",
-    volDownColor: "rgba(236, 72, 153, 0.35)",
+    volUpColor: "rgba(59, 130, 246, 0.28)",
+    volDownColor: "rgba(236, 72, 153, 0.28)",
     priceLineColor: "#3B82F6",
   },
   bw: {
@@ -244,8 +253,8 @@ export const CANDLE_THEMES: Record<string, CandleTheme> = {
     name: "Black & White",
     upColor: "#FFFFFF",
     downColor: "#2A2E39",
-    volUpColor: "rgba(255, 255, 255, 0.4)",
-    volDownColor: "rgba(67, 70, 81, 0.5)",
+    volUpColor: "rgba(255, 255, 255, 0.35)",
+    volDownColor: "rgba(67, 70, 81, 0.4)",
     priceLineColor: "#FFFFFF",
   },
 };
@@ -1288,9 +1297,10 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
   // Futures Setup Scanner Collapsed State & Auto-Collapse Threshold Timer
   const [isScannerCollapsed, setIsScannerCollapsed] = useState<boolean>(() => {
     try {
-      return localStorage.getItem("chart_scanner_collapsed") === "true";
+      const saved = localStorage.getItem("chart_scanner_collapsed");
+      return saved !== null ? saved === "true" : true;
     } catch {}
-    return false;
+    return true;
   });
 
   const autoCollapseTimerRef = useRef<NodeJS.Timeout | null>(null);
@@ -1747,10 +1757,10 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
 
           if (boxWidth <= 5 || startX >= maxVisibleX) return;
 
-          ctx.fillStyle = isBull ? "rgba(0, 245, 160, 0.14)" : "rgba(255, 73, 92, 0.14)";
+          ctx.fillStyle = isBull ? "rgba(0, 245, 160, 0.06)" : "rgba(255, 73, 92, 0.06)";
           ctx.fillRect(startX, yTop, boxWidth, yBot - yTop);
 
-          ctx.strokeStyle = isBull ? "rgba(0, 245, 160, 0.6)" : "rgba(255, 73, 92, 0.6)";
+          ctx.strokeStyle = isBull ? "rgba(0, 245, 160, 0.4)" : "rgba(255, 73, 92, 0.4)";
           ctx.lineWidth = 1;
           ctx.strokeRect(startX, yTop, boxWidth, yBot - yTop);
 
@@ -1781,11 +1791,11 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
 
           if (boxWidth <= 5 || startX >= maxVisibleX) return;
 
-          ctx.fillStyle = isBull ? "rgba(0, 229, 255, 0.18)" : "rgba(236, 72, 153, 0.18)";
+          ctx.fillStyle = isBull ? "rgba(0, 229, 255, 0.07)" : "rgba(236, 72, 153, 0.07)";
           ctx.fillRect(startX, yTop, boxWidth, yBot - yTop);
 
-          ctx.strokeStyle = isBull ? "rgba(0, 229, 255, 0.8)" : "rgba(236, 72, 153, 0.8)";
-          ctx.lineWidth = 1.5;
+          ctx.strokeStyle = isBull ? "rgba(0, 229, 255, 0.5)" : "rgba(236, 72, 153, 0.5)";
+          ctx.lineWidth = 1;
           ctx.strokeRect(startX, yTop, boxWidth, yBot - yTop);
 
           ctx.fillStyle = isBull ? "#00E5FF" : "#EC4899";
@@ -1845,10 +1855,18 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
           const centerX = startX + lineWidth / 2;
           const labelY = isBull ? yLine - 5 : yLine + 12;
 
-          ctx.fillStyle = strokeColor;
           ctx.font = isMajor ? "bold 10px monospace" : "bold 9px monospace";
+          const textW = ctx.measureText(labelText).width || 60;
+          ctx.fillStyle = "rgba(10, 13, 20, 0.85)";
+          ctx.fillRect(centerX - textW / 2 - 4, labelY - 9, textW + 8, 12);
+          ctx.strokeStyle = strokeColor;
+          ctx.lineWidth = 0.5;
+          ctx.strokeRect(centerX - textW / 2 - 4, labelY - 9, textW + 8, 12);
+
+          ctx.fillStyle = strokeColor;
           ctx.textAlign = "center";
           ctx.fillText(labelText, centerX, labelY);
+          ctx.textAlign = "left";
           ctx.textAlign = "left";
         }
       });
@@ -1984,33 +2002,45 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
 
           if (bandWidth <= 4 || startX >= maxVisibleX) return;
 
-          let bgStyle = "rgba(147, 51, 234, 0.08)";
-          let strokeStyle = "#9333EA";
-          let badgeBg = "#9333EA";
+          let bgStyle = "rgba(147, 51, 234, 0.03)";
+          let strokeStyle = "rgba(147, 51, 234, 0.4)";
+          let badgeBg = "#A855F7";
 
           if (s.type === "LONDON") {
-            bgStyle = "rgba(0, 229, 255, 0.09)";
-            strokeStyle = "#00E5FF";
+            bgStyle = "rgba(0, 229, 255, 0.035)";
+            strokeStyle = "rgba(0, 229, 255, 0.4)";
             badgeBg = "#00E5FF";
           } else if (s.type === "NEW_YORK") {
-            bgStyle = "rgba(255, 170, 0, 0.09)";
-            strokeStyle = "#FFAA00";
+            bgStyle = "rgba(255, 170, 0, 0.035)";
+            strokeStyle = "rgba(255, 170, 0, 0.4)";
             badgeBg = "#FFAA00";
           }
 
           ctx.fillStyle = bgStyle;
           ctx.fillRect(startX, 0, bandWidth, height);
 
+          // Subtle session boundary lines
           ctx.strokeStyle = strokeStyle;
           ctx.lineWidth = 1;
+          ctx.setLineDash([4, 4]);
           ctx.beginPath();
-          ctx.moveTo(startX, 2);
-          ctx.lineTo(endX, 2);
+          ctx.moveTo(startX, 0);
+          ctx.lineTo(startX, height);
+          ctx.moveTo(endX, 0);
+          ctx.lineTo(endX, height);
           ctx.stroke();
+          ctx.setLineDash([]);
 
           const centerX = startX + bandWidth / 2;
-          ctx.fillStyle = badgeBg;
           ctx.font = "bold 8px monospace";
+          const tagW = Math.max(54, ctx.measureText(s.name).width + 12);
+          ctx.fillStyle = "rgba(10, 13, 20, 0.85)";
+          ctx.fillRect(centerX - tagW / 2, 2, tagW, 14);
+          ctx.strokeStyle = strokeStyle;
+          ctx.lineWidth = 0.5;
+          ctx.strokeRect(centerX - tagW / 2, 2, tagW, 14);
+
+          ctx.fillStyle = badgeBg;
           ctx.textAlign = "center";
           ctx.fillText(s.name, centerX, 12);
           ctx.textAlign = "left";
@@ -2033,19 +2063,16 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
 
           if (bandWidth <= 4 || startX >= maxVisibleX) return;
 
-          ctx.fillStyle = "rgba(255, 215, 0, 0.12)";
+          ctx.fillStyle = "rgba(255, 215, 0, 0.04)";
           ctx.fillRect(startX, 0, bandWidth, height);
 
-          ctx.strokeStyle = "rgba(255, 215, 0, 0.8)";
-          ctx.lineWidth = 1.2;
+          ctx.strokeStyle = "rgba(255, 215, 0, 0.45)";
+          ctx.lineWidth = 1;
           ctx.setLineDash([3, 3]);
 
           ctx.beginPath();
           ctx.moveTo(startX, 0);
           ctx.lineTo(startX, height);
-          ctx.stroke();
-
-          ctx.beginPath();
           ctx.moveTo(endX, 0);
           ctx.lineTo(endX, height);
           ctx.stroke();
@@ -2053,14 +2080,14 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
           ctx.setLineDash([]);
 
           const centerX = startX + bandWidth / 2;
-          ctx.fillStyle = "rgba(255, 215, 0, 0.25)";
-          ctx.fillRect(centerX - 42, 18, 84, 14);
+          ctx.fillStyle = "rgba(10, 13, 20, 0.85)";
+          ctx.fillRect(centerX - 44, 18, 88, 14);
 
-          ctx.strokeStyle = "#FFD700";
-          ctx.lineWidth = 1;
-          ctx.strokeRect(centerX - 42, 18, 84, 14);
+          ctx.strokeStyle = "rgba(255, 215, 0, 0.5)";
+          ctx.lineWidth = 0.5;
+          ctx.strokeRect(centerX - 44, 18, 88, 14);
 
-          ctx.fillStyle = "#FFFFFF";
+          ctx.fillStyle = "#FFD700";
           ctx.font = "bold 8px monospace";
           ctx.textAlign = "center";
           ctx.fillText("SILVER BULLET 🎯", centerX, 28);
@@ -4059,25 +4086,28 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
         <div style={{
           display: "flex",
           alignItems: "center",
-          flexWrap: "wrap",
-          gap: "10px",
-          background: "rgba(15, 19, 28, 0.85)",
+          flexWrap: "nowrap",
+          overflowX: "auto",
+          maxWidth: "calc(100% - 150px)",
+          gap: "8px",
+          background: "rgba(15, 19, 28, 0.88)",
           backdropFilter: "blur(12px)",
           WebkitBackdropFilter: "blur(12px)",
-          padding: "6px 14px",
+          padding: "5px 12px",
           borderRadius: "8px",
           border: "1px solid rgba(255, 255, 255, 0.12)",
           boxShadow: "0 4px 20px rgba(0, 0, 0, 0.4)",
+          scrollbarWidth: "none",
         }}>
           {/* SYMBOL */}
-          <span style={{ fontWeight: 800, color: "var(--accent-cyan)", letterSpacing: "0.3px" }}>{activeSymbolName}</span>
+          <span style={{ fontWeight: 800, color: "var(--accent-cyan, #00E5FF)", letterSpacing: "0.3px" }}>{activeSymbolName}</span>
 
           <span style={{ color: "rgba(255, 255, 255, 0.2)" }}>•</span>
 
           {/* LIVE PRICE (LTP) */}
-          <div style={{ display: "flex", alignItems: "center", gap: "4px" }}>
-            <span style={{ fontSize: "10px", color: "var(--text-muted)", fontWeight: 700 }}>LTP</span>
-            <span style={{ fontWeight: 800, color: activeChange >= 0 ? "var(--accent-green)" : "var(--accent-red)" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: "4px", flexShrink: 0 }}>
+            <span style={{ fontSize: "10px", color: "var(--text-muted, #8E9BAE)", fontWeight: 700 }}>LTP</span>
+            <span style={{ fontWeight: 800, color: activeChange >= 0 ? "var(--accent-green, #00F5A0)" : "var(--accent-red, #FF495C)" }}>
               ${formatPriceDynamic(activeLtp)}
             </span>
           </div>
@@ -4085,9 +4115,9 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
           <span style={{ color: "rgba(255, 255, 255, 0.2)" }}>•</span>
 
           {/* DAY CHANGE */}
-          <div style={{ display: "flex", alignItems: "center", gap: "4px" }}>
-            <span style={{ fontSize: "10px", color: "var(--text-muted)", fontWeight: 700 }}>CHG</span>
-            <span style={{ fontWeight: 700, color: activeChange >= 0 ? "var(--accent-green)" : "var(--accent-red)" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: "4px", flexShrink: 0 }}>
+            <span style={{ fontSize: "10px", color: "var(--text-muted, #8E9BAE)", fontWeight: 700 }}>CHG</span>
+            <span style={{ fontWeight: 700, color: activeChange >= 0 ? "var(--accent-green, #00F5A0)" : "var(--accent-red, #FF495C)" }}>
               {activeChange >= 0 ? "+" : ""}{formatPriceDynamic(activeChange)} ({activePChange >= 0 ? "+" : ""}{Number(activePChange).toFixed(2)}%)
             </span>
           </div>
@@ -4095,8 +4125,8 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
           <span style={{ color: "rgba(255, 255, 255, 0.2)" }}>•</span>
 
           {/* TOTAL VOLUME */}
-          <div style={{ display: "flex", alignItems: "center", gap: "4px" }}>
-            <span style={{ fontSize: "10px", color: "var(--text-muted)", fontWeight: 700 }}>VOL</span>
+          <div style={{ display: "flex", alignItems: "center", gap: "4px", flexShrink: 0 }}>
+            <span style={{ fontSize: "10px", color: "var(--text-muted, #8E9BAE)", fontWeight: 700 }}>VOL</span>
             <span style={{ fontWeight: 700, color: "#FFFFFF" }}>
               {Number(activeVolume).toLocaleString("en-US")}
             </span>
@@ -4105,8 +4135,8 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
           <span style={{ color: "rgba(255, 255, 255, 0.2)" }}>•</span>
 
           {/* BID */}
-          <div style={{ display: "flex", alignItems: "center", gap: "4px" }}>
-            <span style={{ fontSize: "10px", color: "var(--text-muted)", fontWeight: 700 }}>BID</span>
+          <div style={{ display: "flex", alignItems: "center", gap: "4px", flexShrink: 0 }}>
+            <span style={{ fontSize: "10px", color: "var(--text-muted, #8E9BAE)", fontWeight: 700 }}>BID</span>
             <span style={{ fontWeight: 800, color: "#00F5A0" }}>
               ${formatPriceDynamic(activeBid)}
             </span>
@@ -4115,8 +4145,8 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
           <span style={{ color: "rgba(255, 255, 255, 0.2)" }}>•</span>
 
           {/* ASK */}
-          <div style={{ display: "flex", alignItems: "center", gap: "4px" }}>
-            <span style={{ fontSize: "10px", color: "var(--text-muted)", fontWeight: 700 }}>ASK</span>
+          <div style={{ display: "flex", alignItems: "center", gap: "4px", flexShrink: 0 }}>
+            <span style={{ fontSize: "10px", color: "var(--text-muted, #8E9BAE)", fontWeight: 700 }}>ASK</span>
             <span style={{ fontWeight: 800, color: "#FF495C" }}>
               ${formatPriceDynamic(activeAsk)}
             </span>
@@ -4125,9 +4155,9 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
           <span style={{ color: "rgba(255, 255, 255, 0.2)" }}>•</span>
 
           {/* SPREAD */}
-          <div style={{ display: "flex", alignItems: "center", gap: "4px" }}>
-            <span style={{ fontSize: "10px", color: "var(--text-muted)", fontWeight: 700 }}>SPREAD</span>
-            <span style={{ fontWeight: 800, color: "var(--accent-cyan)", background: "rgba(0, 245, 255, 0.12)", padding: "1px 5px", borderRadius: "4px", border: "1px solid rgba(0, 245, 255, 0.3)" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: "4px", flexShrink: 0 }}>
+            <span style={{ fontSize: "10px", color: "var(--text-muted, #8E9BAE)", fontWeight: 700 }}>SPREAD</span>
+            <span style={{ fontWeight: 800, color: "var(--accent-cyan, #00E5FF)", background: "rgba(0, 245, 255, 0.12)", padding: "1px 5px", borderRadius: "4px", border: "1px solid rgba(0, 245, 255, 0.3)" }}>
               ${formatPriceDynamic(activeSpread, activePricePrec)} ({activeSpreadPct.toFixed(3)}%)
             </span>
           </div>
@@ -4136,19 +4166,19 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
           {perpMetrics && (
             <>
               <span style={{ color: "rgba(255, 255, 255, 0.2)" }}>•</span>
-              <div style={{ display: "flex", alignItems: "center", gap: "4px" }}>
-                <span style={{ fontSize: "10px", color: "var(--text-muted)", fontWeight: 700 }}>FUNDING</span>
-                <span style={{ fontWeight: 800, color: perpMetrics.lastFundingRate >= 0 ? "var(--accent-green)" : "var(--accent-red)" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: "4px", flexShrink: 0 }}>
+                <span style={{ fontSize: "10px", color: "var(--text-muted, #8E9BAE)", fontWeight: 700 }}>FUNDING</span>
+                <span style={{ fontWeight: 800, color: perpMetrics.lastFundingRate >= 0 ? "var(--accent-green, #00F5A0)" : "var(--accent-red, #FF495C)" }}>
                   {perpMetrics.lastFundingRate >= 0 ? "+" : ""}{(perpMetrics.lastFundingRate * 100).toFixed(4)}%
                 </span>
-                <span style={{ fontSize: "10px", color: "var(--text-muted)" }}>
+                <span style={{ fontSize: "10px", color: "var(--text-muted, #8E9BAE)" }}>
                   in <FundingCountdown nextFundingTime={perpMetrics.nextFundingTime} />
                 </span>
               </div>
 
               <span style={{ color: "rgba(255, 255, 255, 0.2)" }}>•</span>
-              <div style={{ display: "flex", alignItems: "center", gap: "4px" }}>
-                <span style={{ fontSize: "10px", color: "var(--text-muted)", fontWeight: 700 }}>OI</span>
+              <div style={{ display: "flex", alignItems: "center", gap: "4px", flexShrink: 0 }}>
+                <span style={{ fontSize: "10px", color: "var(--text-muted, #8E9BAE)", fontWeight: 700 }}>OI</span>
                 <span style={{ fontWeight: 800, color: "var(--text-primary, #fff)" }}>
                   {perpMetrics.openInterest.toLocaleString("en-US", { maximumFractionDigits: 1 })}
                 </span>
@@ -4177,11 +4207,12 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
                   border: `1px solid ${isLong ? "rgba(0, 245, 160, 0.4)" : "rgba(255, 73, 92, 0.4)"}`,
                   padding: "2px 7px",
                   borderRadius: "5px",
+                  flexShrink: 0,
                 }}>
                   <span style={{ fontWeight: 800, color: isLong ? "#00F5A0" : "#FF495C", fontSize: "10px" }}>
                     ACTIVE {pos.side} × {pos.qty}
                   </span>
-                  <span style={{ fontSize: "10px", color: "var(--text-muted)" }}>@ ${formatPriceDynamic(pos.entryPrice, prec)}</span>
+                  <span style={{ fontSize: "10px", color: "var(--text-muted, #8E9BAE)" }}>@ ${formatPriceDynamic(pos.entryPrice, prec)}</span>
                   <span style={{ fontWeight: 800, color: isProfit ? "#00F5A0" : "#FF495C", fontSize: "11px" }}>
                     {isProfit ? "+" : ""}${formatPriceDynamic(pnlVal, 2)} ({isProfit ? "+" : ""}{pnlPct.toFixed(2)}%)
                   </span>
@@ -4193,9 +4224,9 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
           <span style={{ color: "rgba(255, 255, 255, 0.2)" }}>•</span>
 
           {/* LIVE TICK */}
-          <div style={{ display: "flex", alignItems: "center", gap: "4px" }}>
-            <span style={{ fontSize: "10px", color: "var(--text-muted)", fontWeight: 700 }}>TICK</span>
-            <span style={{ fontSize: "11px", color: "var(--accent-green)", fontWeight: 700 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: "4px", flexShrink: 0 }}>
+            <span style={{ fontSize: "10px", color: "var(--text-muted, #8E9BAE)", fontWeight: 700 }}>TICK</span>
+            <span style={{ fontSize: "11px", color: "var(--accent-green, #00F5A0)", fontWeight: 700 }}>
               {tickTimeFormatted}
             </span>
           </div>
@@ -4203,21 +4234,27 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
           <span style={{ color: "rgba(255, 255, 255, 0.2)" }}>•</span>
 
           {/* NEXT CANDLE COUNTDOWN */}
-          <CandleCountdown interval={interval} />
+          <div style={{ flexShrink: 0 }}>
+            <CandleCountdown interval={interval} />
+          </div>
         </div>
 
         {/* ROW 2: Indicators Bar positioned directly below Status Line */}
         <div style={{
           display: "flex",
           alignItems: "center",
-          gap: "8px",
-          background: "rgba(15, 19, 28, 0.85)",
+          flexWrap: "nowrap",
+          overflowX: "auto",
+          maxWidth: "calc(100% - 150px)",
+          gap: "6px",
+          background: "rgba(15, 19, 28, 0.88)",
           backdropFilter: "blur(12px)",
           WebkitBackdropFilter: "blur(12px)",
-          padding: "4px 12px",
+          padding: "3px 8px",
           borderRadius: "6px",
           border: "1px solid rgba(255, 255, 255, 0.1)",
           width: "fit-content",
+          scrollbarWidth: "none",
         }}>
           {/* INDICATORS DROPDOWN BUTTON */}
           <div ref={indicatorsPanelRef} style={{ position: "relative" }}>
@@ -5217,7 +5254,13 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
           display: "flex",
           gap: "10px",
           pointerEvents: "none",
-          textShadow: "0 1px 2px rgba(0,0,0,0.6)",
+          background: "rgba(10, 13, 20, 0.75)",
+          backdropFilter: "blur(6px)",
+          WebkitBackdropFilter: "blur(6px)",
+          padding: "3px 8px",
+          borderRadius: "4px",
+          border: "1px solid rgba(255, 255, 255, 0.08)",
+          textShadow: "0 1px 2px rgba(0,0,0,0.8)",
           visibility: "hidden",
         }}
       />

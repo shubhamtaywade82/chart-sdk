@@ -1,9 +1,29 @@
 {
   "name": "chart-sdk",
-  "private": true,
   "version": "1.0.0",
   "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    },
+    "./core": {
+      "types": "./dist/core.d.ts",
+      "import": "./dist/core.js",
+      "require": "./dist/core.cjs"
+    },
+    "./css": "./src/index.css"
+  },
+  "files": [
+    "dist",
+    "src/index.css"
+  ],
   "scripts": {
+    "build:package": "vite build --config vite.lib.config.ts && tsc -p tsconfig.build.json",
     "dev:crypto": "tsx server/binance/index.ts & tsx server/coindcx/index.ts & VITE_APP=crypto vite --port 5200",
     "dev:binance": "npm run dev:crypto",
     "dev:dhanhq": "tsx server/dhanhq/index.ts & VITE_APP=dhanhq vite --port 5201",
@@ -20,6 +40,7 @@
     "start:binance": "npm run start:crypto",
     "start:dhanhq": "tsx server/dhanhq/index.ts & VITE_APP=dhanhq vite --port 5201",
     "start:coindcx": "tsx server/coindcx/index.ts & VITE_APP=coindcx vite --port 5202",
+    "build": "npm run build:package",
     "build:crypto": "VITE_APP=crypto tsc && VITE_APP=crypto vite build --outDir dist/crypto",
     "build:binance": "VITE_APP=crypto tsc && VITE_APP=crypto vite build --outDir dist/crypto",
     "build:dhanhq": "VITE_APP=dhanhq tsc && VITE_APP=dhanhq vite build --outDir dist/dhanhq",
@@ -51,5 +72,11 @@
     "tsx": "^4.23.1",
     "typescript": "^5.9.3",
     "vite": "^6.2.0"
+  },
+  "peerDependencies": {
+    "lightweight-charts": "^5.0.0",
+    "lucide-react": "^0.477.0 || ^0.525.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
   }
 }
