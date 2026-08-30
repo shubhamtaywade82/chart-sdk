@@ -505,6 +505,7 @@ export function App() {
                     livePrice={tick?.ltp}
                     tick={tick}
                     positions={positions}
+                    orders={orders}
                   />
                 </div>
               </div>

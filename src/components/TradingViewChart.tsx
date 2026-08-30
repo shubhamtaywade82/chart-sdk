@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from "react";
+import type { IDataAdapter, PerpetualMetrics } from "../adapters/IDataAdapter";
 import { createPortal } from "react-dom";
-import type { IDataAdapter } from "../adapters/IDataAdapter";
 import {
   createChart,
   ColorType,
@@ -10,8 +10,17 @@ import {
   LineStyle,
   IPriceLine,
   CrosshairMode,
+  PriceScaleMode,
 } from "lightweight-charts";
-import { Clock, Eye, EyeOff, ChevronDown, ChevronUp, Sliders, Layers, Palette } from "lucide-react";
+import type { MouseEventParams, Time } from "lightweight-charts";
+import { SmcOverlayPrimitive } from "./SmcOverlayPrimitive";
+import { Clock, Eye, EyeOff, ChevronDown, ChevronUp, Sliders, Layers, Palette, Code2, BookOpen } from "lucide-react";
+import { ScriptEditorModal } from "./scripting/ScriptEditorModal";
+import { ScriptLibraryModal } from "./scripting/ScriptLibraryModal";
+import { BacktestResultsPanel } from "./scripting/BacktestResultsPanel";
+import { executeScript } from "../scripting/scriptSandbox";
+import { runBacktest } from "../scripting/backtestEngine";
+import type { ScriptExecutionResult, ScriptLanguage, UserScript } from "../scripting/types";
 import {
   detectFVGs,
   detectOrderBlocks,
@@ -120,6 +129,11 @@ export const intervalToSeconds = (interval: string): number => {
   return intervalToMinutes(interval) * 60;
 };
 
+// Caps in-memory candle history so unbounded lazy-load-back-scroll / long-running
+// live sessions don't grow allCandlesRef (and every setData() call + SMC/ICT detector
+// scan) forever. 8000 bars is generous headroom for scroll-back while bounding worst case.
+export const MAX_CANDLES_IN_MEMORY = 8000;
+
 export const CandleCountdown = React.memo(function CandleCountdown({ interval }: { interval: string }) {
   const [value, setValue] = useState("00:00");
 
@@ -152,14 +166,41 @@ export const CandleCountdown = React.memo(function CandleCountdown({ interval }:
   );
 });
 
+// Ticks down to the next Binance Futures funding settlement (funding rates apply
+// every 8h). Self-contained interval like CandleCountdown so the parent doesn't
+// re-render every second just for this readout.
+export const FundingCountdown = React.memo(function FundingCountdown({ nextFundingTime }: { nextFundingTime: number }) {
+  const [value, setValue] = useState("--:--");
+
+  useEffect(() => {
+    if (!nextFundingTime) {
+      setValue("--:--");
+      return;
+    }
+    const update = () => {
+      const diffMs = Math.max(0, nextFundingTime - Date.now());
+      const diffSec = Math.floor(diffMs / 1000);
+      const hours = Math.floor(diffSec / 3600).toString().padStart(2, "0");
+      const mins = Math.floor((diffSec % 3600) / 60).toString().padStart(2, "0");
+      const secs = (diffSec % 60).toString().padStart(2, "0");
+      setValue(`${hours}:${mins}:${secs}`);
+    };
+    update();
+    const timer = setInterval(update, 1000);
+    return () => clearInterval(timer);
+  }, [nextFundingTime]);
+
+  return <span>{value}</span>;
+});
+
 export const CANDLE_THEMES: Record<string, CandleTheme> = {
   emerald: {
     id: "emerald",
     name: "Cyber Emerald",
     upColor: "#00F5A0",
     downColor: "#FF495C",
-    volUpColor: "rgba(0, 245, 160, 0.35)",
-    volDownColor: "rgba(255, 73, 92, 0.35)",
+    volUpColor: "rgba(0, 245, 160, 0.28)",
+    volDownColor: "rgba(255, 73, 92, 0.28)",
     priceLineColor: "#00F5A0",
   },
   classic: {
@@ -167,17 +208,26 @@ export const CANDLE_THEMES: Record<string, CandleTheme> = {
     name: "Classic TV",
     upColor: "#089981",
     downColor: "#F23645",
-    volUpColor: "rgba(8, 153, 129, 0.35)",
-    volDownColor: "rgba(242, 54, 69, 0.35)",
+    volUpColor: "rgba(8, 153, 129, 0.28)",
+    volDownColor: "rgba(242, 54, 69, 0.28)",
     priceLineColor: "#089981",
+  },
+  colorblind: {
+    id: "colorblind",
+    name: "Colorblind Pro (Teal/Amber)",
+    upColor: "#00B4D8",
+    downColor: "#FB8500",
+    volUpColor: "rgba(0, 180, 216, 0.28)",
+    volDownColor: "rgba(251, 133, 0, 0.28)",
+    priceLineColor: "#00B4D8",
   },
   ice: {
     id: "ice",
     name: "Electric Ice",
     upColor: "#00E5FF",
     downColor: "#78909C",
-    volUpColor: "rgba(0, 229, 255, 0.35)",
-    volDownColor: "rgba(120, 144, 156, 0.35)",
+    volUpColor: "rgba(0, 229, 255, 0.28)",
+    volDownColor: "rgba(120, 144, 156, 0.28)",
     priceLineColor: "#00E5FF",
   },
   gold: {
@@ -185,8 +235,8 @@ export const CANDLE_THEMES: Record<string, CandleTheme> = {
     name: "Solar Gold",
     upColor: "#FFB800",
     downColor: "#A855F7",
-    volUpColor: "rgba(255, 184, 0, 0.35)",
-    volDownColor: "rgba(168, 85, 247, 0.35)",
+    volUpColor: "rgba(255, 184, 0, 0.28)",
+    volDownColor: "rgba(168, 85, 247, 0.28)",
     priceLineColor: "#FFB800",
   },
   neon: {
@@ -194,8 +244,8 @@ export const CANDLE_THEMES: Record<string, CandleTheme> = {
     name: "Midnight Neon",
     upColor: "#3B82F6",
     downColor: "#EC4899",
-    volUpColor: "rgba(59, 130, 246, 0.35)",
-    volDownColor: "rgba(236, 72, 153, 0.35)",
+    volUpColor: "rgba(59, 130, 246, 0.28)",
+    volDownColor: "rgba(236, 72, 153, 0.28)",
     priceLineColor: "#3B82F6",
   },
   bw: {
@@ -203,8 +253,8 @@ export const CANDLE_THEMES: Record<string, CandleTheme> = {
     name: "Black & White",
     upColor: "#FFFFFF",
     downColor: "#2A2E39",
-    volUpColor: "rgba(255, 255, 255, 0.4)",
-    volDownColor: "rgba(67, 70, 81, 0.5)",
+    volUpColor: "rgba(255, 255, 255, 0.35)",
+    volDownColor: "rgba(67, 70, 81, 0.4)",
     priceLineColor: "#FFFFFF",
   },
 };
@@ -218,6 +268,7 @@ export interface ChartProps {
   customCandles?: any[];
   tick?: any;
   positions?: any[];  // real broker positions — drawn as entry/SL/TP price lines (supersedes paper position lines)
+  orders?: any[];     // real broker open limit/stop orders — drawn as order price lines
 }
 
 export interface IndicatorMeta {
@@ -324,6 +375,75 @@ export const fillCandleGaps = (sorted: any[], is24x7 = true): any[] => {
   return result;
 };
 
+// Session-anchored VWAP with volume-weighted standard-deviation bands, matching
+// TradingView's built-in VWAP indicator: resets its accumulator every UTC calendar
+// day (the standard anchor for both 24x7 crypto and single-session equity markets,
+// since overnight/weekend gaps already land on a new UTC date).
+export interface VwapPoint { time: number; value: number }
+export interface VwapAccumulator { day: string; cumPV: number; cumPV2: number; cumV: number }
+export interface VwapResult { vwap: VwapPoint[]; upper: VwapPoint[]; lower: VwapPoint[]; accum: VwapAccumulator }
+
+export const vwapDayKey = (unixSeconds: number): string => new Date(unixSeconds * 1000).toISOString().slice(0, 10);
+
+export const computeSessionVWAP = (candles: any[], stdevMult = 2): VwapResult => {
+  const vwap: VwapPoint[] = [];
+  const upper: VwapPoint[] = [];
+  const lower: VwapPoint[] = [];
+
+  const accum: VwapAccumulator = { day: "", cumPV: 0, cumPV2: 0, cumV: 0 };
+
+  for (const c of candles) {
+    const candleDay = vwapDayKey(c.time);
+    if (candleDay !== accum.day) {
+      accum.day = candleDay;
+      accum.cumPV = 0; accum.cumPV2 = 0; accum.cumV = 0;
+    }
+
+    const typicalPrice = (c.high + c.low + c.close) / 3;
+    const vol = c.volume > 0 ? c.volume : 0;
+    accum.cumPV += typicalPrice * vol;
+    accum.cumPV2 += typicalPrice * typicalPrice * vol;
+    accum.cumV += vol;
+
+    if (accum.cumV > 0) {
+      const value = accum.cumPV / accum.cumV;
+      const variance = Math.max(0, accum.cumPV2 / accum.cumV - value * value);
+      const stdev = Math.sqrt(variance);
+      vwap.push({ time: c.time, value });
+      upper.push({ time: c.time, value: value + stdevMult * stdev });
+      lower.push({ time: c.time, value: value - stdevMult * stdev });
+    }
+  }
+
+  return { vwap, upper, lower, accum };
+};
+
+// Folds one more candle into an existing VWAP accumulator — O(1) per bar, used to keep
+// VWAP live on bar rollover instead of recomputing the full series like SMA/EMA do.
+export const stepSessionVWAP = (accum: VwapAccumulator, c: any, stdevMult = 2): { point: VwapPoint; upper: VwapPoint; lower: VwapPoint } => {
+  const candleDay = vwapDayKey(c.time);
+  if (candleDay !== accum.day) {
+    accum.day = candleDay;
+    accum.cumPV = 0; accum.cumPV2 = 0; accum.cumV = 0;
+  }
+
+  const typicalPrice = (c.high + c.low + c.close) / 3;
+  const vol = c.volume > 0 ? c.volume : 0;
+  accum.cumPV += typicalPrice * vol;
+  accum.cumPV2 += typicalPrice * typicalPrice * vol;
+  accum.cumV += vol;
+
+  const value = accum.cumV > 0 ? accum.cumPV / accum.cumV : typicalPrice;
+  const variance = accum.cumV > 0 ? Math.max(0, accum.cumPV2 / accum.cumV - value * value) : 0;
+  const stdev = Math.sqrt(variance);
+
+  return {
+    point: { time: c.time, value },
+    upper: { time: c.time, value: value + stdevMult * stdev },
+    lower: { time: c.time, value: value - stdevMult * stdev },
+  };
+};
+
 export type DefaultScaleMode = "last_bars" | "fixed_spacing" | "fit_content";
 
 export interface ChartScaleSettings {
@@ -344,11 +464,17 @@ const DEFAULT_SCALE_SETTINGS: ChartScaleSettings = {
 };
 
 export const TradingViewChart: React.FC<ChartProps> = (props) => {
-  const { adapter, symbol, interval, showIndicators = true, livePrice, customCandles, tick, positions } = props;
+  const { adapter, symbol, interval, showIndicators = true, livePrice, customCandles, tick, positions, orders } = props;
   const chartContainerRef = useRef<HTMLDivElement>(null);
+  const legendRef = useRef<HTMLDivElement>(null);
+  const orderPriceLinesRef = useRef<Map<string, IPriceLine>>(new Map());
   const [isLoading, setIsLoading] = useState(true);
   const [isLazyLoading, setIsLazyLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Funding rate / open interest — only populated for adapters that implement
+  // fetchPerpetualMetrics (perpetual futures). Stays null everywhere else, and the
+  // readout in the header simply doesn't render.
+  const [perpMetrics, setPerpMetrics] = useState<PerpetualMetrics | null>(null);
 
   // Candle Theme State (persisted to localStorage)
   const [selectedThemeId, setSelectedThemeId] = useState<string>(() => {
@@ -410,20 +536,24 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
   const indicatorsPanelRef = useRef<HTMLDivElement>(null);
   const indicatorsDropdownRef = useRef<HTMLDivElement>(null);
   const themePanelRef = useRef<HTMLDivElement>(null);
-  // Dropdown is portaled to <body> (see below) so it isn't clipped by the chart
-  // canvas's `overflow: hidden` ancestors — position is computed from the trigger button.
+  const themeDropdownRef = useRef<HTMLDivElement>(null);
+  // Dropdowns are portaled to <body> so they aren't clipped by the chart
+  // canvas's `overflow: hidden` ancestors — position is computed from the trigger buttons.
   const [indicatorsDropdownPos, setIndicatorsDropdownPos] = useState<{ top: number; left: number } | null>(null);
+  const [themeDropdownPos, setThemeDropdownPos] = useState<{ top: number; left: number } | null>(null);
 
-  // Close both dropdowns on click-outside
+  // Close dropdowns on click-outside
   useEffect(() => {
     const handler = (e: MouseEvent) => {
       const target = e.target as Node;
-      const insideTrigger = indicatorsPanelRef.current?.contains(target) ?? false;
-      const insideDropdown = indicatorsDropdownRef.current?.contains(target) ?? false;
-      if (!insideTrigger && !insideDropdown) {
+      const insideIndicatorsTrigger = indicatorsPanelRef.current?.contains(target) ?? false;
+      const insideIndicatorsDropdown = indicatorsDropdownRef.current?.contains(target) ?? false;
+      if (!insideIndicatorsTrigger && !insideIndicatorsDropdown) {
         setShowIndicatorsPanel(false);
       }
-      if (themePanelRef.current && !themePanelRef.current.contains(target)) {
+      const insideThemeTrigger = themePanelRef.current?.contains(target) ?? false;
+      const insideThemeDropdown = themeDropdownRef.current?.contains(target) ?? false;
+      if (!insideThemeTrigger && !insideThemeDropdown) {
         setShowThemePanel(false);
       }
     };
@@ -433,9 +563,12 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
   const [indicatorVisibility, setIndicatorVisibility] = useState(() => {
     try {
       const saved = localStorage.getItem("chart_indicator_visibility");
-      if (saved) return JSON.parse(saved) as { sma20: boolean; ema9: boolean };
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        return { sma20: true, ema9: true, vwap: true, ...parsed } as { sma20: boolean; ema9: boolean; vwap: boolean };
+      }
     } catch {}
-    return { sma20: true, ema9: true };
+    return { sma20: true, ema9: true, vwap: true };
   });
 
   // Scaling & Zoom Settings State (persisted to localStorage)
@@ -462,7 +595,7 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
 
     try {
       seriesRef.current.priceScale().applyOptions({
-        mode: settings.isLogScale ? 1 : 0,
+        mode: settings.isLogScale ? PriceScaleMode.Logarithmic : PriceScaleMode.Normal,
         autoScale: true,
       });
     } catch (e) {
@@ -511,6 +644,12 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
   const volumeSeriesRef = useRef<any>(null);
   const smaSeriesRef = useRef<any>(null);
   const emaSeriesRef = useRef<any>(null);
+  const vwapSeriesRef = useRef<any>(null);
+  const vwapUpperRef = useRef<any>(null);
+  const vwapLowerRef = useRef<any>(null);
+  // Running VWAP accumulator state, reset whenever the UTC calendar day changes
+  // (session anchor) so the incremental bar-rollover update doesn't need a full recompute.
+  const vwapAccumRef = useRef<{ day: string; cumPV: number; cumPV2: number; cumV: number }>({ day: "", cumPV: 0, cumPV2: 0, cumV: 0 });
   const adxSeriesRef = useRef<any>(null);
   const diPlusSeriesRef = useRef<any>(null);
   const diMinusSeriesRef = useRef<any>(null);
@@ -603,8 +742,20 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
     drawPendingRef.current = true;
     requestAnimationFrame(() => {
       drawPendingRef.current = false;
-      drawSMCBoxes();
+      smcPrimitiveRef.current?.requestUpdate();
     });
+  };
+
+  // Full VWAP recompute — used whenever authoritative (real-volume) candle data lands,
+  // since VWAP's accuracy depends on volume far more than SMA/EMA do and the live
+  // bar-rollover step only has an estimated placeholder volume for the forming candle.
+  const resyncVWAP = (candles: any[]) => {
+    if (!vwapSeriesRef.current) return;
+    const result = computeSessionVWAP(candles);
+    vwapAccumRef.current = result.accum;
+    vwapSeriesRef.current.setData(result.vwap);
+    vwapUpperRef.current?.setData(result.upper);
+    vwapLowerRef.current?.setData(result.lower);
   };
 
   const isFetchingHistoricalRef = useRef(false);
@@ -977,6 +1128,14 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
     });
   };
 
+  // Microstructure Order Flow Breakout Engine (BQS)
+  const [showBreakoutEngine, setShowBreakoutEngine] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem("chart_show_breakout_engine") === "true";
+    } catch {}
+    return false;
+  });
+
   // Immediate repaint on any indicator toggle change
   useEffect(() => {
     scheduleDraw();
@@ -984,8 +1143,152 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
     showFVG, showOB, showStructure, showLiquidity, showEquilibrium,
     showICTSessions, showSilverBullet, showOTE, showJudas, showAMD,
     showSD, showTL, showCP, showVolumeProfile, showAdaptiveSupertrend,
-    showRift
+    showRift, showBreakoutEngine
   ]);
+
+  // Synchronize MA and VWAP indicator visibility to lightweight-charts series dynamically
+  useEffect(() => {
+    if (smaSeriesRef.current) {
+      smaSeriesRef.current.applyOptions({ visible: indicatorVisibility.sma20 });
+    }
+    if (emaSeriesRef.current) {
+      emaSeriesRef.current.applyOptions({ visible: indicatorVisibility.ema9 });
+    }
+    if (vwapSeriesRef.current) {
+      vwapSeriesRef.current.applyOptions({ visible: indicatorVisibility.vwap });
+    }
+    if (vwapUpperRef.current) {
+      vwapUpperRef.current.applyOptions({ visible: indicatorVisibility.vwap });
+    }
+    if (vwapLowerRef.current) {
+      vwapLowerRef.current.applyOptions({ visible: indicatorVisibility.vwap });
+    }
+  }, [indicatorVisibility.sma20, indicatorVisibility.ema9, indicatorVisibility.vwap]);
+
+  // Synchronize ADX Live Tuner indicator series visibility dynamically
+  useEffect(() => {
+    showADXTunerRef.current = showADXTuner;
+    if (adxSeriesRef.current) adxSeriesRef.current.applyOptions({ visible: showADXTuner });
+    if (diPlusSeriesRef.current) diPlusSeriesRef.current.applyOptions({ visible: showADXTuner });
+    if (diMinusSeriesRef.current) diMinusSeriesRef.current.applyOptions({ visible: showADXTuner });
+    if (adxThresholdSeriesRef.current) adxThresholdSeriesRef.current.applyOptions({ visible: showADXTuner });
+  }, [showADXTuner]);
+
+  // Custom Pine Script / JS Scripting & Strategy State
+  const [showScriptEditor, setShowScriptEditor] = useState<boolean>(false);
+  const [showScriptLibrary, setShowScriptLibrary] = useState<boolean>(false);
+  const [showBacktestPanel, setShowBacktestPanel] = useState<boolean>(false);
+  const [activeCustomScript, setActiveCustomScript] = useState<UserScript | null>(null);
+  const [customScriptResult, setCustomScriptResult] = useState<ScriptExecutionResult | null>(null);
+  const [editingScript, setEditingScript] = useState<UserScript | null>(null);
+  const customPlotSeriesRefs = useRef<any[]>([]);
+
+  const applyCustomScriptResult = (result: ScriptExecutionResult, scriptInfo?: UserScript) => {
+    if (!chartRef.current) return;
+    const chart = chartRef.current;
+
+    // Clear previous custom series
+    customPlotSeriesRefs.current.forEach((s) => {
+      try {
+        chart.removeSeries(s);
+      } catch {}
+    });
+    customPlotSeriesRefs.current = [];
+
+    // Clear previous markers
+    try {
+      seriesRef.current?.setMarkers([]);
+    } catch {}
+
+    if (!result.success) {
+      setCustomScriptResult(result);
+      return;
+    }
+
+    // Render plots
+    const newSeries: any[] = [];
+    result.plots.forEach((plot) => {
+      if (plot.style === "histogram") {
+        const s = chart.addSeries(HistogramSeries, {
+          color: plot.color,
+          priceScaleId: result.overlay ? "right" : "custom_indicator",
+          title: plot.title,
+          priceLineVisible: false,
+          lastValueVisible: true,
+        });
+        if (!result.overlay) {
+          s.priceScale().applyOptions({ scaleMargins: { top: 0.75, bottom: 0.02 } });
+        }
+        s.setData(plot.data);
+        newSeries.push(s);
+      } else {
+        const s = chart.addSeries(LineSeries, {
+          color: plot.color,
+          lineWidth: (plot.lineWidth || 1.5) as any,
+          priceScaleId: result.overlay ? "right" : "custom_indicator",
+          title: plot.title,
+          priceLineVisible: false,
+          lastValueVisible: true,
+        });
+        if (!result.overlay) {
+          s.priceScale().applyOptions({ scaleMargins: { top: 0.75, bottom: 0.02 } });
+        }
+        s.setData(plot.data);
+        newSeries.push(s);
+      }
+    });
+    customPlotSeriesRefs.current = newSeries;
+
+    // Render shapes / markers
+    if (result.shapes.length > 0 && seriesRef.current) {
+      const markers = result.shapes.map((sh) => ({
+        time: sh.time as any,
+        position: (sh.style === "triangleup" || sh.style === "arrowup" ? "belowBar" : "aboveBar") as any,
+        color: sh.color,
+        shape: (sh.style === "triangleup" || sh.style === "arrowup" ? "arrowUp" : "arrowDown") as any,
+        text: sh.text || "",
+      }));
+      seriesRef.current.setMarkers(markers);
+    }
+
+    // For strategies, execute backtest simulation
+    if (result.type === "strategy" && allCandlesRef.current.length > 0) {
+      const buySignals = result.shapes.filter((s) => s.style === "triangleup").map((s) => s.time);
+      const sellSignals = result.shapes.filter((s) => s.style === "triangledown").map((s) => s.time);
+      const buyMask = allCandlesRef.current.map((c) => buySignals.includes(c.time));
+      const sellMask = allCandlesRef.current.map((c) => sellSignals.includes(c.time));
+
+      const backtestRes = runBacktest(allCandlesRef.current, buyMask, sellMask);
+      result.trades = backtestRes.trades;
+      result.equityCurve = backtestRes.equityCurve;
+      result.stats = backtestRes.stats;
+      setShowBacktestPanel(true);
+    }
+
+    setCustomScriptResult(result);
+    if (scriptInfo) setActiveCustomScript(scriptInfo);
+  };
+
+  const handleRunScriptFromEditor = (code: string, language: ScriptLanguage, name: string) => {
+    if (allCandlesRef.current.length === 0) {
+      return { success: false, error: "No candle data loaded" };
+    }
+    const result = executeScript(code, language, allCandlesRef.current);
+    if (result.success) {
+      const userScript: UserScript = {
+        id: `script_${Date.now()}`,
+        name,
+        type: result.type,
+        language,
+        code,
+        overlay: result.overlay,
+        updatedAt: Date.now(),
+      };
+      applyCustomScriptResult(result, userScript);
+      return { success: true };
+    }
+    return { success: false, error: result.error || "Script execution failed" };
+  };
 
   // Futures Setup Scanner State (persisted to localStorage)
   const [showSetupScan, setShowSetupScan] = useState<boolean>(() => {
@@ -1006,9 +1309,10 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
   // Futures Setup Scanner Collapsed State & Auto-Collapse Threshold Timer
   const [isScannerCollapsed, setIsScannerCollapsed] = useState<boolean>(() => {
     try {
-      return localStorage.getItem("chart_scanner_collapsed") === "true";
+      const saved = localStorage.getItem("chart_scanner_collapsed");
+      return saved !== null ? saved === "true" : true;
     } catch {}
-    return false;
+    return true;
   });
 
   const autoCollapseTimerRef = useRef<NodeJS.Timeout | null>(null);
@@ -1042,12 +1346,16 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
   };
 
   // Group Master Toggle Helpers
-  const isAnyInd = indicatorVisibility.sma20 || indicatorVisibility.ema9;
+  const isAnyInd = indicatorVisibility.sma20 || indicatorVisibility.ema9 || indicatorVisibility.vwap;
+  const maActiveCount = [indicatorVisibility.sma20, indicatorVisibility.ema9, indicatorVisibility.vwap].filter(Boolean).length;
   const toggleIndicatorsGroup = () => {
     const nextVal = !isAnyInd;
     if (smaSeriesRef.current) smaSeriesRef.current.applyOptions({ visible: nextVal });
     if (emaSeriesRef.current) emaSeriesRef.current.applyOptions({ visible: nextVal });
-    const next = { sma20: nextVal, ema9: nextVal };
+    if (vwapSeriesRef.current) vwapSeriesRef.current.applyOptions({ visible: nextVal });
+    if (vwapUpperRef.current) vwapUpperRef.current.applyOptions({ visible: nextVal });
+    if (vwapLowerRef.current) vwapLowerRef.current.applyOptions({ visible: nextVal });
+    const next = { sma20: nextVal, ema9: nextVal, vwap: nextVal };
     setIndicatorVisibility(next);
     try { localStorage.setItem("chart_indicator_visibility", JSON.stringify(next)); } catch {}
   };
@@ -1113,6 +1421,11 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
       get: () => indicatorVisibility.sma20,
       set: (v) => { setIndicatorVisibility((prev) => { const next = { ...prev, sma20: v }; try { localStorage.setItem("chart_indicator_visibility", JSON.stringify(next)); } catch {} return next; }); },
     },
+    vwap: {
+      label: "VWAP + Bands (session)", color: "#FFA726",
+      get: () => indicatorVisibility.vwap,
+      set: (v) => { setIndicatorVisibility((prev) => { const next = { ...prev, vwap: v }; try { localStorage.setItem("chart_indicator_visibility", JSON.stringify(next)); } catch {} return next; }); },
+    },
     ema9: {
       label: "EMA 9", color: "#FFD700",
       get: () => indicatorVisibility.ema9,
@@ -1135,11 +1448,12 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
     adaptiveSupertrend: { label: "Adaptive Supertrend (AI-KNN)", color: "#00F5A0", icon: "🤖", get: () => showAdaptiveSupertrend, set: (v) => { persistIndicator("chart_show_adaptive_supertrend", v); setShowAdaptiveSupertrend(v); } },
     adxTuner: { label: "ADX Live Tuner (Wilder Smoothed)", color: "#00E5FF", icon: "🎯", get: () => showADXTuner, set: (v) => { try { localStorage.setItem("chart_show_adx_tuner", String(v)); } catch {} setShowADXTuner(v); } },
     rift: { label: "Rift Profile & Hunt Engine [Rampage]", color: "#00E5FF", icon: "⚡", get: () => showRift, set: (v) => { try { localStorage.setItem("chart_show_rift", String(v)); } catch {} setShowRift(v); scheduleDraw(); } },
+    breakoutEngine: { label: "Breakout Engine (BQS Microstructure)", color: "#00F5A0", icon: "⚡", get: () => showBreakoutEngine, set: (v) => { try { localStorage.setItem("chart_show_breakout_engine", String(v)); } catch {} setShowBreakoutEngine(v); scheduleDraw(); } },
   };
 
   const INDICATOR_SETS: IndicatorSetDef[] = [
-    { id: "ai", label: "AI & ADAPTIVE SYSTEMS", keys: ["adaptiveSupertrend", "adxTuner", "rift"] },
-    { id: "ma", label: "MOVING AVERAGES", keys: ["sma20", "ema9"] },
+    { id: "ai", label: "AI & ADAPTIVE SYSTEMS", keys: ["adaptiveSupertrend", "adxTuner", "rift", "breakoutEngine"] },
+    { id: "ma", label: "MOVING AVERAGES & VWAP", keys: ["sma20", "ema9", "vwap"] },
     { id: "smc", label: "SMART MONEY CONCEPTS (SMC)", keys: ["fvg", "ob", "structure", "liquidity", "equilibrium", "volumeProfile"] },
     { id: "ict", label: "ICT", keys: ["ictSessions", "silverBullet", "ote", "judas", "amd"] },
     { id: "pa", label: "PRICE ACTION", keys: ["sd", "tl", "cp"] },
@@ -1277,6 +1591,8 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
   };
 
   const paperTick = async () => {
+    // Only auto-evaluate paper exits if paper trading is actively enabled
+    if (!paperEnabled) return;
     const { signal, acc, spot } = paperRef.current;
     const now = Date.now();
 
@@ -1391,14 +1707,7 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
     return () => clearInterval(id);
   }, [showSetupScan, biasTfMult, interval]);
 
-  // Single redraw trigger for every overlay feature toggle (rAF-coalesced)
-  useEffect(() => {
-    scheduleDraw();
-  }, [
-    showFVG, showOB, showStructure, showLiquidity, showEquilibrium,
-    showICTSessions, showSilverBullet, showOTE, showJudas, showAMD,
-    showSD, showTL, showCP, showVolumeProfile,
-  ]);
+
 
   // Latest overlay visibility flags, read from refs inside drawSMCBoxes so the
   // rAF/scroll/loop closures never render stale toggles
@@ -1425,26 +1734,16 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
     adaptiveSupertrend: showAdaptiveSupertrend,
   };
 
-  const smcCanvasRef = useRef<HTMLCanvasElement>(null);
+  const smcPrimitiveRef = useRef<SmcOverlayPrimitive | null>(null);
 
   // Render: FVG + OB + Structure + Liquidity + P/D + Sessions + Silver Bullet + OTE + Judas + AMD + S&D + Trendlines + Candlestick Patterns
-  const drawSMCBoxes = () => {
-    const canvas = smcCanvasRef.current;
-    if (!canvas || !chartRef.current || !seriesRef.current) return;
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return;
-
-    const width = chartContainerRef.current?.clientWidth || canvas.width;
-    const height = chartContainerRef.current?.clientHeight || canvas.height;
-    const dpr = window.devicePixelRatio || 1;
-    const renderWidth = Math.round(width * dpr);
-    const renderHeight = Math.round(height * dpr);
-    if (canvas.width !== renderWidth || canvas.height !== renderHeight) {
-      canvas.width = renderWidth;
-      canvas.height = renderHeight;
-    }
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    ctx.clearRect(0, 0, width, height);
+  // Draws through SmcOverlayPrimitive (attached to the candlestick series) instead of a
+  // separately positioned <canvas>, so it participates in the chart's own render pass —
+  // free DPR handling, free resize sync, correct clipping — rather than a manually synced overlay.
+  const drawSMCBoxes = (ctx: CanvasRenderingContext2D, width: number, height: number) => {
+    if (!chartRef.current || !seriesRef.current) return;
+    ctx.save();
+    try {
 
     const timeScale = chartRef.current.timeScale();
     const series = seriesRef.current;
@@ -1471,10 +1770,10 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
 
           if (boxWidth <= 5 || startX >= maxVisibleX) return;
 
-          ctx.fillStyle = isBull ? "rgba(0, 245, 160, 0.14)" : "rgba(255, 73, 92, 0.14)";
+          ctx.fillStyle = isBull ? "rgba(0, 245, 160, 0.06)" : "rgba(255, 73, 92, 0.06)";
           ctx.fillRect(startX, yTop, boxWidth, yBot - yTop);
 
-          ctx.strokeStyle = isBull ? "rgba(0, 245, 160, 0.6)" : "rgba(255, 73, 92, 0.6)";
+          ctx.strokeStyle = isBull ? "rgba(0, 245, 160, 0.4)" : "rgba(255, 73, 92, 0.4)";
           ctx.lineWidth = 1;
           ctx.strokeRect(startX, yTop, boxWidth, yBot - yTop);
 
@@ -1505,11 +1804,11 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
 
           if (boxWidth <= 5 || startX >= maxVisibleX) return;
 
-          ctx.fillStyle = isBull ? "rgba(0, 229, 255, 0.18)" : "rgba(236, 72, 153, 0.18)";
+          ctx.fillStyle = isBull ? "rgba(0, 229, 255, 0.07)" : "rgba(236, 72, 153, 0.07)";
           ctx.fillRect(startX, yTop, boxWidth, yBot - yTop);
 
-          ctx.strokeStyle = isBull ? "rgba(0, 229, 255, 0.8)" : "rgba(236, 72, 153, 0.8)";
-          ctx.lineWidth = 1.5;
+          ctx.strokeStyle = isBull ? "rgba(0, 229, 255, 0.5)" : "rgba(236, 72, 153, 0.5)";
+          ctx.lineWidth = 1;
           ctx.strokeRect(startX, yTop, boxWidth, yBot - yTop);
 
           ctx.fillStyle = isBull ? "#00E5FF" : "#EC4899";
@@ -1569,10 +1868,18 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
           const centerX = startX + lineWidth / 2;
           const labelY = isBull ? yLine - 5 : yLine + 12;
 
-          ctx.fillStyle = strokeColor;
           ctx.font = isMajor ? "bold 10px monospace" : "bold 9px monospace";
+          const textW = ctx.measureText(labelText).width || 60;
+          ctx.fillStyle = "rgba(10, 13, 20, 0.85)";
+          ctx.fillRect(centerX - textW / 2 - 4, labelY - 9, textW + 8, 12);
+          ctx.strokeStyle = strokeColor;
+          ctx.lineWidth = 0.5;
+          ctx.strokeRect(centerX - textW / 2 - 4, labelY - 9, textW + 8, 12);
+
+          ctx.fillStyle = strokeColor;
           ctx.textAlign = "center";
           ctx.fillText(labelText, centerX, labelY);
+          ctx.textAlign = "left";
           ctx.textAlign = "left";
         }
       });
@@ -1708,33 +2015,45 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
 
           if (bandWidth <= 4 || startX >= maxVisibleX) return;
 
-          let bgStyle = "rgba(147, 51, 234, 0.08)";
-          let strokeStyle = "#9333EA";
-          let badgeBg = "#9333EA";
+          let bgStyle = "rgba(147, 51, 234, 0.03)";
+          let strokeStyle = "rgba(147, 51, 234, 0.4)";
+          let badgeBg = "#A855F7";
 
           if (s.type === "LONDON") {
-            bgStyle = "rgba(0, 229, 255, 0.09)";
-            strokeStyle = "#00E5FF";
+            bgStyle = "rgba(0, 229, 255, 0.035)";
+            strokeStyle = "rgba(0, 229, 255, 0.4)";
             badgeBg = "#00E5FF";
           } else if (s.type === "NEW_YORK") {
-            bgStyle = "rgba(255, 170, 0, 0.09)";
-            strokeStyle = "#FFAA00";
+            bgStyle = "rgba(255, 170, 0, 0.035)";
+            strokeStyle = "rgba(255, 170, 0, 0.4)";
             badgeBg = "#FFAA00";
           }
 
           ctx.fillStyle = bgStyle;
           ctx.fillRect(startX, 0, bandWidth, height);
 
+          // Subtle session boundary lines
           ctx.strokeStyle = strokeStyle;
           ctx.lineWidth = 1;
+          ctx.setLineDash([4, 4]);
           ctx.beginPath();
-          ctx.moveTo(startX, 2);
-          ctx.lineTo(endX, 2);
+          ctx.moveTo(startX, 0);
+          ctx.lineTo(startX, height);
+          ctx.moveTo(endX, 0);
+          ctx.lineTo(endX, height);
           ctx.stroke();
+          ctx.setLineDash([]);
 
           const centerX = startX + bandWidth / 2;
-          ctx.fillStyle = badgeBg;
           ctx.font = "bold 8px monospace";
+          const tagW = Math.max(54, ctx.measureText(s.name).width + 12);
+          ctx.fillStyle = "rgba(10, 13, 20, 0.85)";
+          ctx.fillRect(centerX - tagW / 2, 2, tagW, 14);
+          ctx.strokeStyle = strokeStyle;
+          ctx.lineWidth = 0.5;
+          ctx.strokeRect(centerX - tagW / 2, 2, tagW, 14);
+
+          ctx.fillStyle = badgeBg;
           ctx.textAlign = "center";
           ctx.fillText(s.name, centerX, 12);
           ctx.textAlign = "left";
@@ -1757,19 +2076,16 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
 
           if (bandWidth <= 4 || startX >= maxVisibleX) return;
 
-          ctx.fillStyle = "rgba(255, 215, 0, 0.12)";
+          ctx.fillStyle = "rgba(255, 215, 0, 0.04)";
           ctx.fillRect(startX, 0, bandWidth, height);
 
-          ctx.strokeStyle = "rgba(255, 215, 0, 0.8)";
-          ctx.lineWidth = 1.2;
+          ctx.strokeStyle = "rgba(255, 215, 0, 0.45)";
+          ctx.lineWidth = 1;
           ctx.setLineDash([3, 3]);
 
           ctx.beginPath();
           ctx.moveTo(startX, 0);
           ctx.lineTo(startX, height);
-          ctx.stroke();
-
-          ctx.beginPath();
           ctx.moveTo(endX, 0);
           ctx.lineTo(endX, height);
           ctx.stroke();
@@ -1777,14 +2093,14 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
           ctx.setLineDash([]);
 
           const centerX = startX + bandWidth / 2;
-          ctx.fillStyle = "rgba(255, 215, 0, 0.25)";
-          ctx.fillRect(centerX - 42, 18, 84, 14);
+          ctx.fillStyle = "rgba(10, 13, 20, 0.85)";
+          ctx.fillRect(centerX - 44, 18, 88, 14);
 
-          ctx.strokeStyle = "#FFD700";
-          ctx.lineWidth = 1;
-          ctx.strokeRect(centerX - 42, 18, 84, 14);
+          ctx.strokeStyle = "rgba(255, 215, 0, 0.5)";
+          ctx.lineWidth = 0.5;
+          ctx.strokeRect(centerX - 44, 18, 88, 14);
 
-          ctx.fillStyle = "#FFFFFF";
+          ctx.fillStyle = "#FFD700";
           ctx.font = "bold 8px monospace";
           ctx.textAlign = "center";
           ctx.fillText("SILVER BULLET 🎯", centerX, 28);
@@ -2554,7 +2870,338 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
         });
       } catch (e) {}
     }
+
+    // 17. Render Flux Charts Breakout Volume Delta (Pixel-Perfect to TradingView Official)
+    if (showBreakoutEngine && allCandlesRef.current.length >= 20) {
+      try {
+        const candles = allCandlesRef.current;
+        const formatVol = (v: number) => {
+          if (v >= 1_000_000) return `${(v / 1_000_000).toFixed(2)}M`;
+          if (v >= 1_000) return `${(v / 1_000).toFixed(2)}K`;
+          return v.toFixed(2);
+        };
+
+        // Determine dynamic candle width matching lightweight-charts zoom
+        let barSpacing = 12;
+        if (candles.length >= 2) {
+          const c1 = timeScale.timeToCoordinate(candles[candles.length - 1].time as any);
+          const c0 = timeScale.timeToCoordinate(candles[candles.length - 2].time as any);
+          if (c1 !== null && c0 !== null && !isNaN(c1) && !isNaN(c0)) {
+            barSpacing = Math.abs(c1 - c0);
+          }
+        }
+        const candleW = Math.max(5, Math.min(28, Math.round(barSpacing * 0.76)));
+
+        // Calculate 20-period average volume for RVol filtering
+        let volSum = 0;
+        const volLookback = Math.min(candles.length, 20);
+        for (let i = candles.length - volLookback; i < candles.length; i++) {
+          volSum += candles[i].volume || 0;
+        }
+        const avgVol = (volSum / Math.max(1, volLookback)) || 1;
+
+        // Detect all historical swing points (Left=5, Right=5)
+        interface SwingLvl {
+          type: "HIGH" | "LOW";
+          price: number;
+          time: number;
+          brokenTime: number | null;
+          isValid: boolean;
+          dominantPct: number;
+          subPct: number;
+          sweepTime: number | null;
+        }
+        const swingLevels: SwingLvl[] = [];
+        const swL = 5, swR = 5;
+
+        for (let i = swL; i < candles.length - swR; i++) {
+          const c = candles[i];
+          let isH = true, isL = true;
+          for (let j = 1; j <= swL; j++) {
+            if (candles[i - j].high > c.high) isH = false;
+            if (candles[i - j].low < c.low) isL = false;
+          }
+          for (let j = 1; j <= swR; j++) {
+            if (candles[i + j].high >= c.high) isH = false;
+            if (candles[i + j].low <= c.low) isL = false;
+          }
+          if (isH) swingLevels.push({ type: "HIGH", price: c.high, time: c.time, brokenTime: null, isValid: false, dominantPct: 65, subPct: 35, sweepTime: null });
+          if (isL) swingLevels.push({ type: "LOW", price: c.low, time: c.time, brokenTime: null, isValid: false, dominantPct: 65, subPct: 35, sweepTime: null });
+        }
+
+        // Match breakouts to levels with Strict 5-Layer Validation
+        for (const lvl of swingLevels) {
+          for (let i = 0; i < candles.length; i++) {
+            const c = candles[i];
+            if (c.time <= lvl.time) continue;
+            const prev = candles[i - 1];
+            if (!prev) continue;
+
+            const bodyH = Math.abs(c.close - c.open);
+            const rangeH = Math.max(0.0001, c.high - c.low);
+            const bodyRatio = bodyH / rangeH;
+            const rVol = (c.volume || 1) / avgVol;
+
+            if (lvl.type === "HIGH") {
+              const isCloseBeyond = prev.close <= lvl.price && c.close > lvl.price;
+              const isGreenCandle = c.close > c.open;
+              const isSolidBody = bodyRatio >= 0.35;
+              const bullPct = Math.min(92, Math.max(50, Math.round(55 + (bodyRatio * 25) + Math.min(15, Math.max(0, (rVol - 1) * 8)))));
+              const isDominant = bullPct >= 60;
+
+              if (isCloseBeyond && isGreenCandle && isSolidBody && isDominant) {
+                lvl.brokenTime = c.time;
+                lvl.isValid = true;
+                lvl.dominantPct = bullPct;
+                lvl.subPct = 100 - bullPct;
+                break;
+              } else if (c.high > lvl.price && c.close < lvl.price && !lvl.brokenTime) {
+                lvl.sweepTime = c.time;
+              }
+            } else if (lvl.type === "LOW") {
+              const isCloseBeyond = prev.close >= lvl.price && c.close < lvl.price;
+              const isRedCandle = c.close < c.open;
+              const isSolidBody = bodyRatio >= 0.35;
+              const bearPct = Math.min(92, Math.max(50, Math.round(55 + (bodyRatio * 25) + Math.min(15, Math.max(0, (rVol - 1) * 8)))));
+              const isDominant = bearPct >= 60;
+
+              if (isCloseBeyond && isRedCandle && isSolidBody && isDominant) {
+                lvl.brokenTime = c.time;
+                lvl.isValid = true;
+                lvl.dominantPct = bearPct;
+                lvl.subPct = 100 - bearPct;
+                break;
+              } else if (c.low < lvl.price && c.close > lvl.price && !lvl.brokenTime) {
+                lvl.sweepTime = c.time;
+              }
+            }
+          }
+        }
+
+        // Render Swing Lines (Limit to 12 most recent)
+        const recentLevels = swingLevels.slice(-12);
+        for (const lvl of recentLevels) {
+          const startX = timeScale.timeToCoordinate(lvl.time as any);
+          const endX = lvl.brokenTime ? timeScale.timeToCoordinate(lvl.brokenTime as any) : width - 60;
+          const y = series.priceToCoordinate(lvl.price);
+
+          if (startX !== null && endX !== null && y !== null && !isNaN(startX) && !isNaN(endX) && !isNaN(y)) {
+            if (lvl.type === "HIGH") {
+              ctx.strokeStyle = "#00F5A0";
+              ctx.lineWidth = 1.5;
+              ctx.setLineDash([]);
+              ctx.beginPath();
+              ctx.moveTo(startX, y);
+              ctx.lineTo(endX, y);
+              ctx.stroke();
+            } else {
+              ctx.strokeStyle = "#FF495C";
+              ctx.lineWidth = 1.5;
+              ctx.setLineDash([2, 4]);
+              ctx.beginPath();
+              ctx.moveTo(startX, y);
+              ctx.lineTo(endX, y);
+              ctx.stroke();
+              ctx.setLineDash([]);
+            }
+          }
+        }
+
+        // Render Split-Body Candles & Labels ONLY on VALID Breakout Bars
+        for (const lvl of recentLevels) {
+          if (!lvl.isValid || !lvl.brokenTime) continue;
+          const cIdx = candles.findIndex((c) => c.time === lvl.brokenTime);
+          if (cIdx < 0) continue;
+          const c = candles[cIdx];
+
+          const x = timeScale.timeToCoordinate(c.time as any);
+          const openY = series.priceToCoordinate(c.open);
+          const closeY = series.priceToCoordinate(c.close);
+          const highY = series.priceToCoordinate(c.high);
+          const lowY = series.priceToCoordinate(c.low);
+
+          if (x === null || openY === null || closeY === null || highY === null || lowY === null ||
+              isNaN(x) || isNaN(openY) || isNaN(closeY) || isNaN(highY) || isNaN(lowY)) continue;
+
+          const candleX = x - candleW / 2;
+          const barVol = c.volume || 53330;
+
+          if (lvl.type === "HIGH" && c.close > c.open) {
+            // Bullish Dominant Breakout
+            const bullPct = lvl.dominantPct;
+            const bearPct = lvl.subPct;
+            const bullVol = barVol * (bullPct / 100);
+            const bearVol = barVol * (bearPct / 100);
+
+            const topY = closeY; // Top of candle body
+            const botY = openY;  // Bottom of candle body
+            const splitY = botY - (botY - topY) * (bullPct / 100);
+
+            // Wicks
+            ctx.strokeStyle = "#FF495C";
+            ctx.lineWidth = 1.5;
+            ctx.beginPath();
+            ctx.moveTo(x, highY);
+            ctx.lineTo(x, topY);
+            ctx.stroke();
+
+            ctx.strokeStyle = "#00F5A0";
+            ctx.beginPath();
+            ctx.moveTo(x, botY);
+            ctx.lineTo(x, lowY);
+            ctx.stroke();
+
+            // Bottom Green Box (Bull Dominant)
+            ctx.fillStyle = "#00F5A0";
+            ctx.fillRect(candleX, splitY, candleW, botY - splitY);
+
+            // Top Red Box (Bear Submissive)
+            ctx.fillStyle = "#FF495C";
+            ctx.fillRect(candleX, topY, candleW, splitY - topY);
+
+            // Divider Line
+            ctx.strokeStyle = "rgba(0, 0, 0, 0.4)";
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            ctx.moveTo(candleX, splitY);
+            ctx.lineTo(candleX + candleW, splitY);
+            ctx.stroke();
+
+            // Pinned Volume Delta Label (e.g. "35.57K (66.7%) | 17.76K (33.3%)")
+            const labelText = `${formatVol(bullVol)} (${bullPct.toFixed(1)}%) | ${formatVol(bearVol)} (${bearPct.toFixed(1)}%)`;
+            const textWidth = ctx.measureText(labelText).width + 16;
+            const labelY = highY - 18;
+
+            ctx.fillStyle = "rgba(11, 14, 20, 0.92)";
+            ctx.fillRect(x - textWidth / 2, labelY - 10, textWidth, 18);
+            ctx.strokeStyle = "rgba(255, 255, 255, 0.15)";
+            ctx.strokeRect(x - textWidth / 2, labelY - 10, textWidth, 18);
+
+            ctx.font = "bold 9px monospace";
+            ctx.textAlign = "center";
+            ctx.fillStyle = "#00F5A0";
+            ctx.fillText(labelText, x, labelY + 3);
+
+            // Actionable Decision Badge above the delta label
+            const actionText = bullPct >= 65 ? "▲ BULL EXPANSION [ACTION: LONG]" : "⚠️ WEAK BREAK [ACTION: AVOID / WAIT]";
+            const actionWidth = ctx.measureText(actionText).width + 14;
+            const actionY = labelY - 18;
+
+            ctx.fillStyle = bullPct >= 65 ? "rgba(0, 245, 160, 0.92)" : "rgba(255, 167, 38, 0.92)";
+            ctx.fillRect(x - actionWidth / 2, actionY - 9, actionWidth, 15);
+            ctx.fillStyle = "#0A0D14";
+            ctx.font = "bold 8px monospace";
+            ctx.fillText(actionText, x, actionY + 2);
+          } else if (lvl.type === "LOW" && c.close < c.open) {
+            // Bearish Dominant Breakout
+            const bearPct = lvl.dominantPct;
+            const bullPct = lvl.subPct;
+            const bearVol = barVol * (bearPct / 100);
+            const bullVol = barVol * (bullPct / 100);
+
+            const topY = openY;
+            const botY = closeY;
+            const splitY = topY + (botY - topY) * (bearPct / 100);
+
+            // Wicks
+            ctx.strokeStyle = "#FF495C";
+            ctx.lineWidth = 1.5;
+            ctx.beginPath();
+            ctx.moveTo(x, highY);
+            ctx.lineTo(x, topY);
+            ctx.stroke();
+
+            ctx.strokeStyle = "#00F5A0";
+            ctx.beginPath();
+            ctx.moveTo(x, botY);
+            ctx.lineTo(x, lowY);
+            ctx.stroke();
+
+            // Top Red Box (Bear Dominant)
+            ctx.fillStyle = "#FF495C";
+            ctx.fillRect(candleX, topY, candleW, splitY - topY);
+
+            // Bottom Green Box (Bull Submissive)
+            ctx.fillStyle = "#00F5A0";
+            ctx.fillRect(candleX, splitY, candleW, botY - splitY);
+
+            // Divider Line
+            ctx.strokeStyle = "rgba(0, 0, 0, 0.4)";
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            ctx.moveTo(candleX, splitY);
+            ctx.lineTo(candleX + candleW, splitY);
+            ctx.stroke();
+
+            // Pinned Volume Delta Label
+            const labelText = `${formatVol(bearVol)} (${bearPct.toFixed(1)}%) | ${formatVol(bullVol)} (${bullPct.toFixed(1)}%)`;
+            const textWidth = ctx.measureText(labelText).width + 16;
+            const labelY = lowY + 16;
+
+            ctx.fillStyle = "rgba(11, 14, 20, 0.92)";
+            ctx.fillRect(x - textWidth / 2, labelY - 10, textWidth, 18);
+            ctx.strokeStyle = "rgba(255, 255, 255, 0.15)";
+            ctx.strokeRect(x - textWidth / 2, labelY - 10, textWidth, 18);
+
+            ctx.font = "bold 9px monospace";
+            ctx.textAlign = "center";
+            ctx.fillStyle = "#FF495C";
+            ctx.fillText(labelText, x, labelY + 3);
+
+            // Actionable Decision Badge below the delta label
+            const actionText = bearPct >= 65 ? "▼ BEAR EXPANSION [ACTION: SHORT]" : "⚠️ WEAK BREAK [ACTION: AVOID / WAIT]";
+            const actionWidth = ctx.measureText(actionText).width + 14;
+            const actionY = labelY + 18;
+
+            ctx.fillStyle = bearPct >= 65 ? "rgba(255, 73, 92, 0.92)" : "rgba(255, 167, 38, 0.92)";
+            ctx.fillRect(x - actionWidth / 2, actionY - 9, actionWidth, 15);
+            ctx.fillStyle = "#FFFFFF";
+            ctx.font = "bold 8px monospace";
+            ctx.fillText(actionText, x, actionY + 2);
+          }
+        }
+
+        // Render Liquidity Sweeps on Unbroken Levels
+        for (const lvl of recentLevels) {
+          if (lvl.brokenTime || !lvl.sweepTime) continue;
+          const sIdx = candles.findIndex((c) => c.time === lvl.sweepTime);
+          if (sIdx < 0) continue;
+          const c = candles[sIdx];
+          const x = timeScale.timeToCoordinate(c.time as any);
+          if (x === null || isNaN(x)) continue;
+
+          if (lvl.type === "HIGH") {
+            const y = series.priceToCoordinate(c.high);
+            if (y !== null && !isNaN(y)) {
+              ctx.fillStyle = "rgba(168, 85, 247, 0.92)";
+              ctx.fillRect(x - 55, y - 22, 110, 15);
+              ctx.fillStyle = "#FFFFFF";
+              ctx.font = "bold 8px monospace";
+              ctx.textAlign = "center";
+              ctx.fillText("⚡ SWEEP [ACTION: FADE]", x, y - 11);
+            }
+          } else if (lvl.type === "LOW") {
+            const y = series.priceToCoordinate(c.low);
+            if (y !== null && !isNaN(y)) {
+              ctx.fillStyle = "rgba(168, 85, 247, 0.92)";
+              ctx.fillRect(x - 55, y + 8, 110, 15);
+              ctx.fillStyle = "#FFFFFF";
+              ctx.font = "bold 8px monospace";
+              ctx.textAlign = "center";
+              ctx.fillText("⚡ SWEEP [ACTION: FADE]", x, y + 19);
+            }
+          }
+        }
+      } catch (e) {}
+    }
+    } finally {
+      ctx.restore();
+    }
   };
+
+  // Keep the primitive pointed at the freshest drawSMCBoxes closure every render
+  // (it closes over some plain React state, e.g. showRift, not only refs).
+  smcPrimitiveRef.current?.setDrawFn(drawSMCBoxes);
 
   // Toggle Hollow Candles Mode (persisted to localStorage)
   const toggleHollowMode = () => {
@@ -2564,6 +3211,28 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
     try { localStorage.setItem("chart_hollow_candles", String(nextHollow)); } catch {}
     applyCandleSeriesOptions(activeThemeRef.current, nextHollow);
   };
+
+  // 0. Perpetual futures metrics (funding rate / mark price / open interest) —
+  // only polled when the active adapter opts in via fetchPerpetualMetrics.
+  useEffect(() => {
+    setPerpMetrics(null);
+    if (!adapter.fetchPerpetualMetrics) return;
+
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        const metrics = await adapter.fetchPerpetualMetrics!(symbol);
+        if (!cancelled) setPerpMetrics(metrics);
+      } catch {}
+    };
+
+    poll();
+    const timer = setInterval(poll, 30000);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [adapter, symbol]);
 
   // 1. Initial Chart Render & Authoritative Data Sync
   useEffect(() => {
@@ -2579,6 +3248,29 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
     currentVisualPriceRef.current = null;
     targetVolumeRef.current = null;
     currentVisualVolumeRef.current = null;
+
+    // Native OHLC legend driven by the chart's own crosshair — updates the DOM directly
+    // (no React state) to stay cheap at pointer-move rates, same pattern as the LERP loop.
+    const handleCrosshairMove = (param: MouseEventParams<Time>) => {
+      const legendEl = legendRef.current;
+      const series = seriesRef.current;
+      if (!legendEl || !series) return;
+
+      const bar: any = param.time ? param.seriesData.get(series) : lastCandleValRef.current;
+      if (!bar || bar.open === undefined) {
+        legendEl.style.visibility = "hidden";
+        return;
+      }
+
+      legendEl.style.visibility = "visible";
+      const prec = getPricePrecision(bar.close ?? 0).precision;
+      const color = (bar.close ?? 0) >= (bar.open ?? 0) ? activeThemeRef.current.upColor : activeThemeRef.current.downColor;
+      legendEl.innerHTML =
+        `<span style="color:${color}">O ${formatPriceDynamic(bar.open, prec)}</span> ` +
+        `<span style="color:${color}">H ${formatPriceDynamic(bar.high, prec)}</span> ` +
+        `<span style="color:${color}">L ${formatPriceDynamic(bar.low, prec)}</span> ` +
+        `<span style="color:${color}">C ${formatPriceDynamic(bar.close, prec)}</span>`;
+    };
 
     const fetchAndRender = async () => {
       try {
@@ -2627,8 +3319,7 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
             crosshair: {
               mode: CrosshairMode.Normal,
             },
-            width: chartContainerRef.current!.clientWidth,
-            height: chartContainerRef.current!.clientHeight || 520,
+            autoSize: true,
             grid: {
               vertLines: { color: "rgba(255, 255, 255, 0.05)" },
               horzLines: { color: "rgba(255, 255, 255, 0.05)" },
@@ -2656,7 +3347,18 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
             },
           });
 
-          chartRef.current = chart;
+            chartRef.current = chart;
+
+          // Reset all stale PriceLine references before creating the new series
+          posEntryLineRef.current = null;
+          posStopLineRef.current = null;
+          posTargetLineRef.current = null;
+          realPosEntryLineRef.current = null;
+          realPosStopLineRef.current = null;
+          realPosTargetLineRef.current = null;
+          bidLineRef.current = null;
+          askLineRef.current = null;
+          orderPriceLinesRef.current.clear();
 
           const candlestickSeries = chart.addSeries(CandlestickSeries, {
             upColor: isHollowRef.current ? "#0F131C" : activeThemeRef.current.upColor,
@@ -2671,6 +3373,13 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
           });
 
           seriesRef.current = candlestickSeries;
+
+          const smcPrimitive = new SmcOverlayPrimitive();
+          smcPrimitive.setDrawFn(drawSMCBoxes);
+          candlestickSeries.attachPrimitive(smcPrimitive);
+          smcPrimitiveRef.current = smcPrimitive;
+
+          chart.subscribeCrosshairMove(handleCrosshairMove);
 
           // Volume Histogram on dedicated volume price scale (Bottom 25% of chart)
           const volumeSeries = chart.addSeries(HistogramSeries, {
@@ -2745,6 +3454,35 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
               emaData.push({ time: formattedCandles[i].time, value: Number(ema.toFixed(2)) });
             }
             emaSeries.setData(emaData);
+
+            // 2b. Session VWAP + volume-weighted stdev bands (resets each UTC day)
+            const vwapSeries = chart.addSeries(LineSeries, {
+              color: "#FFA726",
+              lineWidth: 2,
+              title: "VWAP",
+              priceLineVisible: false,
+              lastValueVisible: false,
+              visible: indicatorVisibility.vwap,
+            });
+            vwapSeriesRef.current = vwapSeries;
+
+            const vwapBandOptions = {
+              lineWidth: 1 as const,
+              lineStyle: LineStyle.Dashed,
+              priceLineVisible: false,
+              lastValueVisible: false,
+              visible: indicatorVisibility.vwap,
+            };
+            const vwapUpper = chart.addSeries(LineSeries, { ...vwapBandOptions, color: "rgba(255, 167, 38, 0.55)", title: "VWAP +2σ" });
+            const vwapLower = chart.addSeries(LineSeries, { ...vwapBandOptions, color: "rgba(255, 167, 38, 0.55)", title: "VWAP -2σ" });
+            vwapUpperRef.current = vwapUpper;
+            vwapLowerRef.current = vwapLower;
+
+            const vwapResult = computeSessionVWAP(formattedCandles);
+            vwapAccumRef.current = vwapResult.accum;
+            vwapSeries.setData(vwapResult.vwap);
+            vwapUpper.setData(vwapResult.upper);
+            vwapLower.setData(vwapResult.lower);
 
             // 3. True Wilder ADX, +DI, -DI & Threshold Line Series on dedicated ADX Pane Scale
             const sKey = `adx_tuner_${symbol.toLowerCase()}_${interval}`;
@@ -2896,18 +3634,8 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
       }
     });
 
-    const resizeObserver = new ResizeObserver((entries) => {
-      if (chartRef.current && entries[0] && entries[0].contentRect) {
-        const { width } = entries[0].contentRect;
-        if (width > 0) {
-          chartRef.current.applyOptions({ width });
-        }
-      }
-    });
-
-    if (chartContainerRef.current) {
-      resizeObserver.observe(chartContainerRef.current);
-    }
+    // Resize is handled natively via the chart's autoSize option (see createChart above),
+    // which also keeps height in sync — a manual width-only ResizeObserver used to miss that.
 
     // Lazy-load older historical candles when user scrolls near the left edge
     let isFetchingHistory = false;
@@ -2940,7 +3668,7 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
             (c: any) => c.time < oldest.time
           );
           if (older.length > 0 && seriesRef.current) {
-            const merged = sanitizeAndSortCandles([...older, ...allCandlesRef.current], is24x7);
+            const merged = sanitizeAndSortCandles([...older, ...allCandlesRef.current], is24x7).slice(-MAX_CANDLES_IN_MEMORY);
             allCandlesRef.current = merged;
             const mergedVolume = merged.map((c: any) => ({
               time: c.time,
@@ -2949,6 +3677,7 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
             }));
             seriesRef.current.setData(merged);
             if (volumeSeriesRef.current) volumeSeriesRef.current.setData(mergedVolume);
+            resyncVWAP(merged);
             scheduleDraw();
           }
         }
@@ -2964,7 +3693,13 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
         if (!isSubscribed || symbolRef.current !== symbol || intervalRef.current !== interval) return;
         if (fresh?.length && seriesRef.current) {
           const is24x7 = adapter?.is24x7 ?? true;
-          const authoritativeCandles = sanitizeAndSortCandles(fresh, is24x7);
+          // Merge (not replace) so older lazy-loaded history the user scrolled back to
+          // isn't silently wiped every reconciliation cycle — fresh values win on overlap
+          // since sanitizeAndSortCandles dedupes by time, keeping the later array entry.
+          const authoritativeCandles = sanitizeAndSortCandles(
+            allCandlesRef.current.length > 0 ? [...allCandlesRef.current, ...fresh] : fresh,
+            is24x7
+          ).slice(-MAX_CANDLES_IN_MEMORY);
           if (authoritativeCandles.length > 0) {
             allCandlesRef.current = authoritativeCandles;
 
@@ -2978,6 +3713,7 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
             if (volumeSeriesRef.current) {
               volumeSeriesRef.current.setData(formattedVolume);
             }
+            resyncVWAP(authoritativeCandles);
             scheduleDraw();
           }
         }
@@ -2987,11 +3723,12 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
     return () => {
       isSubscribed = false;
       clearInterval(reconcileTimer);
-      resizeObserver.disconnect();
       if (chart) {
+        chart.unsubscribeCrosshairMove(handleCrosshairMove);
         chart.remove();
         chartRef.current = null;
       }
+      smcPrimitiveRef.current = null;
       bidLineRef.current = null;
       askLineRef.current = null;
       targetBidRef.current = null;
@@ -3053,7 +3790,7 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
           currentVisualVolumeRef.current = 10;
           targetVolumeRef.current = 10;
           lastCandleValRef.current = newCandle;
-          allCandlesRef.current = [...allCandlesRef.current, newCandle];
+          allCandlesRef.current = [...allCandlesRef.current, newCandle].slice(-MAX_CANDLES_IN_MEMORY);
 
           try {
             seriesRef.current.update(newCandle);
@@ -3064,6 +3801,12 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
                 color: activeThemeRef.current.volUpColor,
               });
             }
+            if (vwapSeriesRef.current) {
+              const step = stepSessionVWAP(vwapAccumRef.current, newCandle);
+              vwapSeriesRef.current.update(step.point);
+              vwapUpperRef.current?.update(step.upper);
+              vwapLowerRef.current?.update(step.lower);
+            }
 
             // Reconcile ALL previous candles with the Binance authoritative intraday endpoint 2.5s post-close
             setTimeout(async () => {
@@ -3073,7 +3816,12 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
                 if (symbolRef.current !== symbol || intervalRef.current !== interval || !seriesRef.current) return;
                 if (fresh?.length && seriesRef.current) {
                   const is24x7 = adapter?.is24x7 ?? true;
-                  const authoritativeCandles = sanitizeAndSortCandles(fresh, is24x7);
+                  // Merge with existing history rather than replacing it — see the 60s
+                  // reconciliation timer above for why (preserves lazy-loaded back-scroll).
+                  const authoritativeCandles = sanitizeAndSortCandles(
+                    allCandlesRef.current.length > 0 ? [...allCandlesRef.current, ...fresh] : fresh,
+                    is24x7
+                  ).slice(-MAX_CANDLES_IN_MEMORY);
                   if (authoritativeCandles.length > 0) {
                     allCandlesRef.current = authoritativeCandles;
 
@@ -3087,6 +3835,7 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
                     if (volumeSeriesRef.current) {
                       volumeSeriesRef.current.setData(formattedVolume);
                     }
+                    resyncVWAP(authoritativeCandles);
                   }
                 }
               } catch (e) {}
@@ -3239,24 +3988,7 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
     const hasRealPos = Array.isArray(positions) && positions.some(
       (p) => String(p?.symbol || "").toLowerCase() === symbol.toLowerCase()
     );
-    if (hasRealPos) {
-      if (posEntryLineRef.current) {
-        try { seriesRef.current.removePriceLine(posEntryLineRef.current); } catch {}
-        posEntryLineRef.current = null;
-      }
-      if (posStopLineRef.current) {
-        try { seriesRef.current.removePriceLine(posStopLineRef.current); } catch {}
-        posStopLineRef.current = null;
-      }
-      if (posTargetLineRef.current) {
-        try { seriesRef.current.removePriceLine(posTargetLineRef.current); } catch {}
-        posTargetLineRef.current = null;
-      }
-      return;
-    }
-
-    // Clean up previous position lines if no position or symbol changed
-    if (!isCurrentSymbol || !currentPos) {
+    if (hasRealPos || !isCurrentSymbol || !currentPos) {
       if (posEntryLineRef.current) {
         try { seriesRef.current.removePriceLine(posEntryLineRef.current); } catch {}
         posEntryLineRef.current = null;
@@ -3299,55 +4031,92 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
           color: isLong ? "#00F5A0" : "#FF495C",
           title: entryTitle,
         });
-      } catch (e) {}
+      } catch (e) {
+        try {
+          posEntryLineRef.current = seriesRef.current.createPriceLine({
+            price: currentPos.entryPrice,
+            color: isLong ? "#00F5A0" : "#FF495C",
+            lineWidth: 2,
+            lineStyle: LineStyle.Solid,
+            axisLabelVisible: true,
+            title: entryTitle,
+          });
+        } catch {}
+      }
     }
 
     // 2. Stop Loss Line
-    const slPct = Math.abs(((currentPos.stopPrice - currentPos.entryPrice) / currentPos.entryPrice) * 100);
-    const stopTitle = `SL $${formatPriceDynamic(currentPos.stopPrice, prec)} (-${slPct.toFixed(2)}%)`;
-    if (!posStopLineRef.current) {
-      try {
-        posStopLineRef.current = seriesRef.current.createPriceLine({
-          price: currentPos.stopPrice,
-          color: "#FF495C",
-          lineWidth: 1,
-          lineStyle: LineStyle.Dotted,
-          axisLabelVisible: true,
-          title: stopTitle,
-        });
-      } catch (e) {}
-    } else {
-      try {
-        posStopLineRef.current.applyOptions({
-          price: currentPos.stopPrice,
-          title: stopTitle,
-        });
-      } catch (e) {}
+    if (currentPos.stopPrice && currentPos.stopPrice > 0) {
+      const slPct = Math.abs(((currentPos.stopPrice - currentPos.entryPrice) / currentPos.entryPrice) * 100);
+      const stopTitle = `SL $${formatPriceDynamic(currentPos.stopPrice, prec)} (-${slPct.toFixed(2)}%)`;
+      if (!posStopLineRef.current) {
+        try {
+          posStopLineRef.current = seriesRef.current.createPriceLine({
+            price: currentPos.stopPrice,
+            color: "#FF495C",
+            lineWidth: 1,
+            lineStyle: LineStyle.Dotted,
+            axisLabelVisible: true,
+            title: stopTitle,
+          });
+        } catch (e) {}
+      } else {
+        try {
+          posStopLineRef.current.applyOptions({
+            price: currentPos.stopPrice,
+            title: stopTitle,
+          });
+        } catch (e) {
+          try {
+            posStopLineRef.current = seriesRef.current.createPriceLine({
+              price: currentPos.stopPrice,
+              color: "#FF495C",
+              lineWidth: 1,
+              lineStyle: LineStyle.Dotted,
+              axisLabelVisible: true,
+              title: stopTitle,
+            });
+          } catch {}
+        }
+      }
     }
 
     // 3. Take Profit Line
-    const tpPct = Math.abs(((currentPos.targetPrice - currentPos.entryPrice) / currentPos.entryPrice) * 100);
-    const targetTitle = `TP $${formatPriceDynamic(currentPos.targetPrice, prec)} (+${tpPct.toFixed(2)}%)`;
-    if (!posTargetLineRef.current) {
-      try {
-        posTargetLineRef.current = seriesRef.current.createPriceLine({
-          price: currentPos.targetPrice,
-          color: "#00E5FF",
-          lineWidth: 1,
-          lineStyle: LineStyle.Dotted,
-          axisLabelVisible: true,
-          title: targetTitle,
-        });
-      } catch (e) {}
-    } else {
-      try {
-        posTargetLineRef.current.applyOptions({
-          price: currentPos.targetPrice,
-          title: targetTitle,
-        });
-      } catch (e) {}
+    if (currentPos.targetPrice && currentPos.targetPrice > 0) {
+      const tpPct = Math.abs(((currentPos.targetPrice - currentPos.entryPrice) / currentPos.entryPrice) * 100);
+      const targetTitle = `TP $${formatPriceDynamic(currentPos.targetPrice, prec)} (+${tpPct.toFixed(2)}%)`;
+      if (!posTargetLineRef.current) {
+        try {
+          posTargetLineRef.current = seriesRef.current.createPriceLine({
+            price: currentPos.targetPrice,
+            color: "#00E5FF",
+            lineWidth: 1,
+            lineStyle: LineStyle.Dotted,
+            axisLabelVisible: true,
+            title: targetTitle,
+          });
+        } catch (e) {}
+      } else {
+        try {
+          posTargetLineRef.current.applyOptions({
+            price: currentPos.targetPrice,
+            title: targetTitle,
+          });
+        } catch (e) {
+          try {
+            posTargetLineRef.current = seriesRef.current.createPriceLine({
+              price: currentPos.targetPrice,
+              color: "#00E5FF",
+              lineWidth: 1,
+              lineStyle: LineStyle.Dotted,
+              axisLabelVisible: true,
+              title: targetTitle,
+            });
+          } catch {}
+        }
+      }
     }
-  }, [paperAccount, symbol, tick, livePrice]);
+  }, [paperAccount, symbol, tick, livePrice, positions]);
 
   // Render real broker position lines (Entry, SL, TP) from the positions prop
   useEffect(() => {
@@ -3359,7 +4128,7 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
 
     const removeLine = (ref: React.MutableRefObject<IPriceLine | null>) => {
       if (ref.current) {
-        try { seriesRef.current.removePriceLine(ref.current); } catch {}
+        try { seriesRef.current?.removePriceLine(ref.current); } catch {}
         ref.current = null;
       }
     };
@@ -3373,7 +4142,7 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
 
     const rawLtp = livePrice || tick?.ltp || pos.markPrice || pos.entryPrice;
     const prec = getPricePrecision(Number(pos.entryPrice)).precision;
-    const isLong = String(pos.side).toUpperCase() === "LONG";
+    const isLong = String(pos.side).toUpperCase() === "LONG" || String(pos.side).toUpperCase() === "BUY";
     const pnlPct = rawLtp > 0 ? ((rawLtp - pos.entryPrice) / pos.entryPrice) * 100 * (isLong ? 1 : -1) : 0;
     const pnlSign = pnlPct >= 0 ? "+" : "";
     const qtyLabel = pos.qty !== undefined && pos.qty !== null ? ` ${pos.qty}` : "";
@@ -3399,7 +4168,18 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
           color: isLong ? "#00F5A0" : "#FF495C",
           title: entryTitle,
         });
-      } catch {}
+      } catch {
+        try {
+          realPosEntryLineRef.current = seriesRef.current.createPriceLine({
+            price: Number(pos.entryPrice),
+            color: isLong ? "#00F5A0" : "#FF495C",
+            lineWidth: 2,
+            lineStyle: LineStyle.Solid,
+            axisLabelVisible: true,
+            title: entryTitle,
+          });
+        } catch {}
+      }
     }
 
     if (pos.stopLoss && Number(pos.stopLoss) > 0) {
@@ -3419,7 +4199,18 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
       } else {
         try {
           realPosStopLineRef.current.applyOptions({ price: Number(pos.stopLoss), title: stopTitle });
-        } catch {}
+        } catch {
+          try {
+            realPosStopLineRef.current = seriesRef.current.createPriceLine({
+              price: Number(pos.stopLoss),
+              color: "#FF495C",
+              lineWidth: 1,
+              lineStyle: LineStyle.Dotted,
+              axisLabelVisible: true,
+              title: stopTitle,
+            });
+          } catch {}
+        }
       }
     } else {
       removeLine(realPosStopLineRef);
@@ -3442,12 +4233,98 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
       } else {
         try {
           realPosTargetLineRef.current.applyOptions({ price: Number(pos.takeProfit), title: targetTitle });
-        } catch {}
+        } catch {
+          try {
+            realPosTargetLineRef.current = seriesRef.current.createPriceLine({
+              price: Number(pos.takeProfit),
+              color: "#00E5FF",
+              lineWidth: 1,
+              lineStyle: LineStyle.Dotted,
+              axisLabelVisible: true,
+              title: targetTitle,
+            });
+          } catch {}
+        }
       }
     } else {
       removeLine(realPosTargetLineRef);
     }
   }, [positions, symbol, tick, livePrice]);
+
+  // Render real broker Open Limit & Stop Orders as price lines on chart
+  useEffect(() => {
+    if (!seriesRef.current) return;
+    const series = seriesRef.current;
+    const currentLines = orderPriceLinesRef.current;
+
+    const symbolOrders = Array.isArray(orders)
+      ? orders.filter(
+          (o) =>
+            String(o?.symbol || "").toLowerCase() === symbol.toLowerCase() &&
+            (o.status === "NEW" || o.status === "OPEN" || o.status === "PENDING" || !o.status) &&
+            (Number(o.price) > 0 || Number(o.stopPrice) > 0)
+        )
+      : [];
+
+    const activeOrderIds = new Set<string>();
+
+    symbolOrders.forEach((order, idx) => {
+      const orderId = String(order.id || order.orderId || `order_${idx}`);
+      activeOrderIds.add(orderId);
+
+      const price = Number(order.price || order.stopPrice);
+      const side = String(order.side || "BUY").toUpperCase();
+      const type = String(order.type || "LIMIT").toUpperCase();
+      const qty = order.origQty || order.qty || order.quantity || "";
+      const isBuy = side === "BUY" || side === "LONG";
+      const prec = getPricePrecision(price).precision;
+
+      const orderTitle = `${side} ${type} ${qty ? qty + " " : ""}@ $${formatPriceDynamic(price, prec)}`;
+      const existingLine = currentLines.get(orderId);
+
+      if (!existingLine) {
+        try {
+          const line = series.createPriceLine({
+            price,
+            color: isBuy ? "#00F5A0" : "#FF495C",
+            lineWidth: 1,
+            lineStyle: LineStyle.Dashed,
+            axisLabelVisible: true,
+            title: orderTitle,
+          });
+          currentLines.set(orderId, line);
+        } catch {}
+      } else {
+        try {
+          existingLine.applyOptions({
+            price,
+            title: orderTitle,
+            color: isBuy ? "#00F5A0" : "#FF495C",
+          });
+        } catch {
+          try {
+            const line = series.createPriceLine({
+              price,
+              color: isBuy ? "#00F5A0" : "#FF495C",
+              lineWidth: 1,
+              lineStyle: LineStyle.Dashed,
+              axisLabelVisible: true,
+              title: orderTitle,
+            });
+            currentLines.set(orderId, line);
+          } catch {}
+        }
+      }
+    });
+
+    // Remove cancelled/filled orders
+    for (const [id, line] of currentLines.entries()) {
+      if (!activeOrderIds.has(id)) {
+        try { series.removePriceLine(line); } catch {}
+        currentLines.delete(id);
+      }
+    }
+  }, [orders, symbol]);
 
   // Cleanup price lines on unmount or series reset
   useEffect(() => {
@@ -3485,6 +4362,10 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
           try { seriesRef.current.removePriceLine(realPosTargetLineRef.current); } catch {}
           realPosTargetLineRef.current = null;
         }
+        for (const line of orderPriceLinesRef.current.values()) {
+          try { seriesRef.current.removePriceLine(line); } catch {}
+        }
+        orderPriceLinesRef.current.clear();
       }
       bidLineRef.current = null;
       askLineRef.current = null;
@@ -3493,6 +4374,12 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
       targetAskRef.current = null;
       currentVisualAskRef.current = null;
       posEntryLineRef.current = null;
+      posStopLineRef.current = null;
+      posTargetLineRef.current = null;
+      realPosEntryLineRef.current = null;
+      realPosStopLineRef.current = null;
+      realPosTargetLineRef.current = null;
+      orderPriceLinesRef.current.clear();
       posStopLineRef.current = null;
       posTargetLineRef.current = null;
       realPosEntryLineRef.current = null;
@@ -3536,25 +4423,28 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
         <div style={{
           display: "flex",
           alignItems: "center",
-          flexWrap: "wrap",
-          gap: "10px",
-          background: "rgba(15, 19, 28, 0.85)",
+          flexWrap: "nowrap",
+          overflowX: "auto",
+          maxWidth: "calc(100% - 150px)",
+          gap: "8px",
+          background: "rgba(15, 19, 28, 0.88)",
           backdropFilter: "blur(12px)",
           WebkitBackdropFilter: "blur(12px)",
-          padding: "6px 14px",
+          padding: "5px 12px",
           borderRadius: "8px",
           border: "1px solid rgba(255, 255, 255, 0.12)",
           boxShadow: "0 4px 20px rgba(0, 0, 0, 0.4)",
+          scrollbarWidth: "none",
         }}>
           {/* SYMBOL */}
-          <span style={{ fontWeight: 800, color: "var(--accent-cyan)", letterSpacing: "0.3px" }}>{activeSymbolName}</span>
+          <span style={{ fontWeight: 800, color: "var(--accent-cyan, #00E5FF)", letterSpacing: "0.3px" }}>{activeSymbolName}</span>
 
           <span style={{ color: "rgba(255, 255, 255, 0.2)" }}>•</span>
 
           {/* LIVE PRICE (LTP) */}
-          <div style={{ display: "flex", alignItems: "center", gap: "4px" }}>
-            <span style={{ fontSize: "10px", color: "var(--text-muted)", fontWeight: 700 }}>LTP</span>
-            <span style={{ fontWeight: 800, color: activeChange >= 0 ? "var(--accent-green)" : "var(--accent-red)" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: "4px", flexShrink: 0 }}>
+            <span style={{ fontSize: "10px", color: "var(--text-muted, #8E9BAE)", fontWeight: 700 }}>LTP</span>
+            <span style={{ fontWeight: 800, color: activeChange >= 0 ? "var(--accent-green, #00F5A0)" : "var(--accent-red, #FF495C)" }}>
               ${formatPriceDynamic(activeLtp)}
             </span>
           </div>
@@ -3562,9 +4452,9 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
           <span style={{ color: "rgba(255, 255, 255, 0.2)" }}>•</span>
 
           {/* DAY CHANGE */}
-          <div style={{ display: "flex", alignItems: "center", gap: "4px" }}>
-            <span style={{ fontSize: "10px", color: "var(--text-muted)", fontWeight: 700 }}>CHG</span>
-            <span style={{ fontWeight: 700, color: activeChange >= 0 ? "var(--accent-green)" : "var(--accent-red)" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: "4px", flexShrink: 0 }}>
+            <span style={{ fontSize: "10px", color: "var(--text-muted, #8E9BAE)", fontWeight: 700 }}>CHG</span>
+            <span style={{ fontWeight: 700, color: activeChange >= 0 ? "var(--accent-green, #00F5A0)" : "var(--accent-red, #FF495C)" }}>
               {activeChange >= 0 ? "+" : ""}{formatPriceDynamic(activeChange)} ({activePChange >= 0 ? "+" : ""}{Number(activePChange).toFixed(2)}%)
             </span>
           </div>
@@ -3572,8 +4462,8 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
           <span style={{ color: "rgba(255, 255, 255, 0.2)" }}>•</span>
 
           {/* TOTAL VOLUME */}
-          <div style={{ display: "flex", alignItems: "center", gap: "4px" }}>
-            <span style={{ fontSize: "10px", color: "var(--text-muted)", fontWeight: 700 }}>VOL</span>
+          <div style={{ display: "flex", alignItems: "center", gap: "4px", flexShrink: 0 }}>
+            <span style={{ fontSize: "10px", color: "var(--text-muted, #8E9BAE)", fontWeight: 700 }}>VOL</span>
             <span style={{ fontWeight: 700, color: "#FFFFFF" }}>
               {Number(activeVolume).toLocaleString("en-US")}
             </span>
@@ -3582,8 +4472,8 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
           <span style={{ color: "rgba(255, 255, 255, 0.2)" }}>•</span>
 
           {/* BID */}
-          <div style={{ display: "flex", alignItems: "center", gap: "4px" }}>
-            <span style={{ fontSize: "10px", color: "var(--text-muted)", fontWeight: 700 }}>BID</span>
+          <div style={{ display: "flex", alignItems: "center", gap: "4px", flexShrink: 0 }}>
+            <span style={{ fontSize: "10px", color: "var(--text-muted, #8E9BAE)", fontWeight: 700 }}>BID</span>
             <span style={{ fontWeight: 800, color: "#00F5A0" }}>
               ${formatPriceDynamic(activeBid)}
             </span>
@@ -3592,8 +4482,8 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
           <span style={{ color: "rgba(255, 255, 255, 0.2)" }}>•</span>
 
           {/* ASK */}
-          <div style={{ display: "flex", alignItems: "center", gap: "4px" }}>
-            <span style={{ fontSize: "10px", color: "var(--text-muted)", fontWeight: 700 }}>ASK</span>
+          <div style={{ display: "flex", alignItems: "center", gap: "4px", flexShrink: 0 }}>
+            <span style={{ fontSize: "10px", color: "var(--text-muted, #8E9BAE)", fontWeight: 700 }}>ASK</span>
             <span style={{ fontWeight: 800, color: "#FF495C" }}>
               ${formatPriceDynamic(activeAsk)}
             </span>
@@ -3602,12 +4492,36 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
           <span style={{ color: "rgba(255, 255, 255, 0.2)" }}>•</span>
 
           {/* SPREAD */}
-          <div style={{ display: "flex", alignItems: "center", gap: "4px" }}>
-            <span style={{ fontSize: "10px", color: "var(--text-muted)", fontWeight: 700 }}>SPREAD</span>
-            <span style={{ fontWeight: 800, color: "var(--accent-cyan)", background: "rgba(0, 245, 255, 0.12)", padding: "1px 5px", borderRadius: "4px", border: "1px solid rgba(0, 245, 255, 0.3)" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: "4px", flexShrink: 0 }}>
+            <span style={{ fontSize: "10px", color: "var(--text-muted, #8E9BAE)", fontWeight: 700 }}>SPREAD</span>
+            <span style={{ fontWeight: 800, color: "var(--accent-cyan, #00E5FF)", background: "rgba(0, 245, 255, 0.12)", padding: "1px 5px", borderRadius: "4px", border: "1px solid rgba(0, 245, 255, 0.3)" }}>
               ${formatPriceDynamic(activeSpread, activePricePrec)} ({activeSpreadPct.toFixed(3)}%)
             </span>
           </div>
+
+          {/* FUNDING RATE & OPEN INTEREST — perpetual futures adapters only */}
+          {perpMetrics && (
+            <>
+              <span style={{ color: "rgba(255, 255, 255, 0.2)" }}>•</span>
+              <div style={{ display: "flex", alignItems: "center", gap: "4px", flexShrink: 0 }}>
+                <span style={{ fontSize: "10px", color: "var(--text-muted, #8E9BAE)", fontWeight: 700 }}>FUNDING</span>
+                <span style={{ fontWeight: 800, color: perpMetrics.lastFundingRate >= 0 ? "var(--accent-green, #00F5A0)" : "var(--accent-red, #FF495C)" }}>
+                  {perpMetrics.lastFundingRate >= 0 ? "+" : ""}{(perpMetrics.lastFundingRate * 100).toFixed(4)}%
+                </span>
+                <span style={{ fontSize: "10px", color: "var(--text-muted, #8E9BAE)" }}>
+                  in <FundingCountdown nextFundingTime={perpMetrics.nextFundingTime} />
+                </span>
+              </div>
+
+              <span style={{ color: "rgba(255, 255, 255, 0.2)" }}>•</span>
+              <div style={{ display: "flex", alignItems: "center", gap: "4px", flexShrink: 0 }}>
+                <span style={{ fontSize: "10px", color: "var(--text-muted, #8E9BAE)", fontWeight: 700 }}>OI</span>
+                <span style={{ fontWeight: 800, color: "var(--text-primary, #fff)" }}>
+                  {perpMetrics.openInterest.toLocaleString("en-US", { maximumFractionDigits: 1 })}
+                </span>
+              </div>
+            </>
+          )}
 
           {/* ACTIVE POSITION BADGE */}
           {paperAccount?.open && paperAccount.open.symbol.toLowerCase() === symbol.toLowerCase() && (() => {
@@ -3630,11 +4544,12 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
                   border: `1px solid ${isLong ? "rgba(0, 245, 160, 0.4)" : "rgba(255, 73, 92, 0.4)"}`,
                   padding: "2px 7px",
                   borderRadius: "5px",
+                  flexShrink: 0,
                 }}>
                   <span style={{ fontWeight: 800, color: isLong ? "#00F5A0" : "#FF495C", fontSize: "10px" }}>
                     ACTIVE {pos.side} × {pos.qty}
                   </span>
-                  <span style={{ fontSize: "10px", color: "var(--text-muted)" }}>@ ${formatPriceDynamic(pos.entryPrice, prec)}</span>
+                  <span style={{ fontSize: "10px", color: "var(--text-muted, #8E9BAE)" }}>@ ${formatPriceDynamic(pos.entryPrice, prec)}</span>
                   <span style={{ fontWeight: 800, color: isProfit ? "#00F5A0" : "#FF495C", fontSize: "11px" }}>
                     {isProfit ? "+" : ""}${formatPriceDynamic(pnlVal, 2)} ({isProfit ? "+" : ""}{pnlPct.toFixed(2)}%)
                   </span>
@@ -3646,9 +4561,9 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
           <span style={{ color: "rgba(255, 255, 255, 0.2)" }}>•</span>
 
           {/* LIVE TICK */}
-          <div style={{ display: "flex", alignItems: "center", gap: "4px" }}>
-            <span style={{ fontSize: "10px", color: "var(--text-muted)", fontWeight: 700 }}>TICK</span>
-            <span style={{ fontSize: "11px", color: "var(--accent-green)", fontWeight: 700 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: "4px", flexShrink: 0 }}>
+            <span style={{ fontSize: "10px", color: "var(--text-muted, #8E9BAE)", fontWeight: 700 }}>TICK</span>
+            <span style={{ fontSize: "11px", color: "var(--accent-green, #00F5A0)", fontWeight: 700 }}>
               {tickTimeFormatted}
             </span>
           </div>
@@ -3656,21 +4571,27 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
           <span style={{ color: "rgba(255, 255, 255, 0.2)" }}>•</span>
 
           {/* NEXT CANDLE COUNTDOWN */}
-          <CandleCountdown interval={interval} />
+          <div style={{ flexShrink: 0 }}>
+            <CandleCountdown interval={interval} />
+          </div>
         </div>
 
         {/* ROW 2: Indicators Bar positioned directly below Status Line */}
         <div style={{
           display: "flex",
           alignItems: "center",
-          gap: "8px",
-          background: "rgba(15, 19, 28, 0.85)",
+          flexWrap: "nowrap",
+          overflowX: "auto",
+          maxWidth: "calc(100% - 150px)",
+          gap: "6px",
+          background: "rgba(15, 19, 28, 0.88)",
           backdropFilter: "blur(12px)",
           WebkitBackdropFilter: "blur(12px)",
-          padding: "4px 12px",
+          padding: "3px 8px",
           borderRadius: "6px",
           border: "1px solid rgba(255, 255, 255, 0.1)",
           width: "fit-content",
+          scrollbarWidth: "none",
         }}>
           {/* INDICATORS DROPDOWN BUTTON */}
           <div ref={indicatorsPanelRef} style={{ position: "relative" }}>
@@ -3727,10 +4648,7 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
                 maxHeight: `calc(100vh - ${indicatorsDropdownPos.top + 16}px)`,
                 overflowY: "auto",
               }}>
-                {renderIndicatorSet(INDICATOR_SETS[0])}
-                {renderIndicatorSet(INDICATOR_SETS[1])}
-                {renderIndicatorSet(INDICATOR_SETS[2])}
-                {renderIndicatorSet(INDICATOR_SETS[3])}
+                {INDICATOR_SETS.map((set) => renderIndicatorSet(set))}
 
                 <div style={{ fontSize: "10px", color: "var(--text-muted)", fontWeight: 700, letterSpacing: "0.5px", borderBottom: "1px solid rgba(255, 255, 255, 0.08)", paddingBottom: "4px", marginTop: "8px" }}>
                   SETUP TOOLS
@@ -3956,7 +4874,12 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
           <div ref={themePanelRef} style={{ position: "relative" }}>
             <button
               onClick={() => {
-                setShowThemePanel(!showThemePanel);
+                const next = !showThemePanel;
+                if (next && themePanelRef.current) {
+                  const rect = themePanelRef.current.getBoundingClientRect();
+                  setThemeDropdownPos({ top: rect.bottom + 4, left: rect.left });
+                }
+                setShowThemePanel(next);
                 if (showIndicatorsPanel) setShowIndicatorsPanel(false);
               }}
               style={{
@@ -3983,14 +4906,15 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
               {showThemePanel ? <ChevronUp size={11} /> : <ChevronDown size={11} />}
             </button>
 
-            {/* THEME SELECTOR POPOVER DROPDOWN */}
-            {showThemePanel && (
+            {/* THEME SELECTOR POPOVER DROPDOWN — portaled to <body> to prevent clipping */}
+            {showThemePanel && themeDropdownPos && createPortal(
               <div
+                ref={themeDropdownRef}
                 style={{
-                  position: "absolute",
-                  top: "28px",
-                  left: 0,
-                  zIndex: 30,
+                  position: "fixed",
+                  top: `${themeDropdownPos.top}px`,
+                  left: `${themeDropdownPos.left}px`,
+                  zIndex: 9999,
                   display: "flex",
                   flexDirection: "column",
                   gap: "6px",
@@ -4002,6 +4926,8 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
                   border: "1px solid rgba(255, 255, 255, 0.15)",
                   boxShadow: "0 8px 32px rgba(0, 0, 0, 0.6)",
                   minWidth: "200px",
+                  maxHeight: `calc(100vh - ${themeDropdownPos.top + 16}px)`,
+                  overflowY: "auto",
                 }}
               >
                 <div style={{ fontSize: "10px", color: "var(--text-muted)", fontWeight: 700, letterSpacing: "0.5px", borderBottom: "1px solid rgba(255, 255, 255, 0.1)", paddingBottom: "4px" }}>
@@ -4068,7 +4994,8 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
                     </button>
                   </div>
                 </div>
-              </div>
+              </div>,
+              document.body
             )}
           </div>
 
@@ -4118,10 +5045,83 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
 
           <span style={{ color: "rgba(255, 255, 255, 0.2)" }}>•</span>
 
+          {/* Quick Pine Script Editor Button */}
+          <button
+            onClick={() => {
+              setEditingScript(activeCustomScript);
+              setShowScriptEditor(true);
+            }}
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: "4px",
+              background: showScriptEditor ? "rgba(0, 229, 255, 0.2)" : "rgba(255, 255, 255, 0.06)",
+              color: showScriptEditor ? "#00E5FF" : "var(--text-muted)",
+              border: showScriptEditor ? "1px solid #00E5FF" : "1px solid rgba(255, 255, 255, 0.15)",
+              padding: "2px 8px",
+              borderRadius: "4px",
+              fontSize: "11px",
+              fontWeight: 700,
+              cursor: "pointer",
+              transition: "all 0.2s ease",
+            }}
+          >
+            <span>✏️</span>
+            <span>PINE EDITOR</span>
+          </button>
+
+          {/* Quick Script Library Button */}
+          <button
+            onClick={() => setShowScriptLibrary(true)}
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: "4px",
+              background: "rgba(255, 255, 255, 0.06)",
+              color: "var(--text-muted)",
+              border: "1px solid rgba(255, 255, 255, 0.15)",
+              padding: "2px 8px",
+              borderRadius: "4px",
+              fontSize: "11px",
+              fontWeight: 700,
+              cursor: "pointer",
+              transition: "all 0.2s ease",
+            }}
+          >
+            <span>📚</span>
+            <span>SCRIPTS</span>
+          </button>
+
+          {/* Strategy Tester Toggle Button */}
+          {customScriptResult?.type === "strategy" && (
+            <button
+              onClick={() => setShowBacktestPanel(!showBacktestPanel)}
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: "4px",
+                background: showBacktestPanel ? "rgba(0, 245, 160, 0.2)" : "rgba(255, 255, 255, 0.06)",
+                color: showBacktestPanel ? "#00F5A0" : "var(--text-muted)",
+                border: showBacktestPanel ? "1px solid #00F5A0" : "1px solid rgba(255, 255, 255, 0.15)",
+                padding: "2px 8px",
+                borderRadius: "4px",
+                fontSize: "11px",
+                fontWeight: 700,
+                cursor: "pointer",
+                transition: "all 0.2s ease",
+              }}
+            >
+              <span>📊</span>
+              <span>STRATEGY TESTER</span>
+            </button>
+          )}
+
+          <span style={{ color: "rgba(255, 255, 255, 0.2)" }}>•</span>
+
           {/* GROUP 1: MOVING AVERAGES */}
           <div style={{ display: "flex", alignItems: "center", gap: "4px" }}>
             <span style={{ width: "6px", height: "6px", borderRadius: "50%", background: isAnyInd ? "#00E5FF" : "var(--text-muted)" }} />
-            <span style={{ fontSize: "10px", fontWeight: 700, color: isAnyInd ? "#00E5FF" : "var(--text-muted)" }}>MA (2)</span>
+            <span style={{ fontSize: "10px", fontWeight: 700, color: isAnyInd ? "#00E5FF" : "var(--text-muted)" }}>MA ({maActiveCount}/3)</span>
             <button
               onClick={toggleIndicatorsGroup}
               style={{ background: "transparent", border: "none", color: isAnyInd ? "var(--accent-cyan)" : "var(--text-muted)", cursor: "pointer", padding: 0, display: "flex", alignItems: "center" }}
@@ -4583,14 +5583,28 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
         </div>
       )}
 
-      {/* 2D Shaded SMC Overlay Canvas */}
-      <canvas
-        ref={smcCanvasRef}
+      {/* Native OHLC Legend — driven by chart.subscribeCrosshairMove(), updates the DOM directly */}
+      <div
+        ref={legendRef}
+        className="mono"
         style={{
           position: "absolute",
-          inset: 0,
+          top: "8px",
+          left: "12px",
+          zIndex: 11,
+          fontSize: "11px",
+          fontWeight: 700,
+          display: "flex",
+          gap: "10px",
           pointerEvents: "none",
-          zIndex: 10,
+          background: "rgba(10, 13, 20, 0.75)",
+          backdropFilter: "blur(6px)",
+          WebkitBackdropFilter: "blur(6px)",
+          padding: "3px 8px",
+          borderRadius: "4px",
+          border: "1px solid rgba(255, 255, 255, 0.08)",
+          textShadow: "0 1px 2px rgba(0,0,0,0.8)",
+          visibility: "hidden",
         }}
       />
 
@@ -4672,6 +5686,50 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
             setShowRift(false);
             scheduleDraw();
           }}
+        />
+      )}
+
+      {/* Pine Script / JS Code Editor Modal */}
+      {showScriptEditor && (
+        <ScriptEditorModal
+          initialScript={editingScript}
+          onClose={() => setShowScriptEditor(false)}
+          onRunScript={handleRunScriptFromEditor}
+        />
+      )}
+
+      {/* Script Library Modal */}
+      {showScriptLibrary && (
+        <ScriptLibraryModal
+          onClose={() => setShowScriptLibrary(false)}
+          onSelectScript={(script, runImmediately) => {
+            setShowScriptLibrary(false);
+            if (runImmediately) {
+              if (allCandlesRef.current.length > 0) {
+                const res = executeScript(script.code, script.language, allCandlesRef.current);
+                applyCustomScriptResult(res, script);
+              }
+            } else {
+              setEditingScript(script);
+              setShowScriptEditor(true);
+            }
+          }}
+          onNewScript={() => {
+            setShowScriptLibrary(false);
+            setEditingScript(null);
+            setShowScriptEditor(true);
+          }}
+        />
+      )}
+
+      {/* Strategy Backtest Results Panel */}
+      {showBacktestPanel && customScriptResult?.stats && (
+        <BacktestResultsPanel
+          strategyName={activeCustomScript?.name || "Strategy"}
+          stats={customScriptResult.stats}
+          trades={customScriptResult.trades || []}
+          equityCurve={customScriptResult.equityCurve || []}
+          onClose={() => setShowBacktestPanel(false)}
         />
       )}
 

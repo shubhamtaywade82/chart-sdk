@@ -24,6 +24,8 @@ import { FuturesBacktestWorkbench } from "../../components/research/FuturesBackt
 import { ConfluenceBacktestWorkbench } from "../../components/research/ConfluenceBacktestWorkbench";
 import { PositioningAnalyticsView } from "../../components/research/PositioningAnalyticsView";
 import { AdaptiveSupertrendWorkbench } from "../../components/research/AdaptiveSupertrendWorkbench";
+import { ExecutionControlBar, ExecutionMode, ExecutionBroker, ExecutionSubMode } from "../../components/ExecutionControlBar";
+import { AuthCredentialsModal } from "../../components/AuthCredentialsModal";
 
 interface TickData {
   symbol: string;
@@ -141,6 +143,57 @@ export function App() {
   // Symbol subscription is handled inside the main WebSocket useEffect below
   // (sending a new subscribe message on reconnect is sufficient)
 
+  // Execution Mode & Broker Selection State (Defaulting to CoinDCX for Real Execution)
+  const [execMode, setExecMode] = useState<ExecutionMode>(() => {
+    try { return (localStorage.getItem("crypto_exec_mode") as any) || "paper"; } catch {}
+    return "paper";
+  });
+  const [selectedBroker, setSelectedBroker] = useState<ExecutionBroker>(() => {
+    try { return (localStorage.getItem("crypto_selected_broker") as any) || "coindcx"; } catch {}
+    return "coindcx";
+  });
+  const [execSubMode, setExecSubMode] = useState<ExecutionSubMode>(() => {
+    try { return (localStorage.getItem("crypto_exec_submode") as any) || "monitor"; } catch {}
+    return "monitor";
+  });
+  const [showAuthModal, setShowAuthModal] = useState(false);
+  const [authStatus, setAuthStatus] = useState<{ binance: boolean; coindcx: boolean }>({ binance: true, coindcx: false });
+  const [liveTradingAllowed, setLiveTradingAllowed] = useState(false);
+
+  const brokerApi = selectedBroker === "coindcx" ? "/api/coindcx" : "/api";
+
+  const handleSetExecMode = (mode: ExecutionMode) => {
+    setExecMode(mode);
+    try { localStorage.setItem("crypto_exec_mode", mode); } catch {}
+  };
+
+  const handleSetBroker = (broker: ExecutionBroker) => {
+    setSelectedBroker(broker);
+    try { localStorage.setItem("crypto_selected_broker", broker); } catch {}
+  };
+
+  const handleSetSubMode = (subMode: ExecutionSubMode) => {
+    setExecSubMode(subMode);
+    try { localStorage.setItem("crypto_exec_submode", subMode); } catch {}
+  };
+
+  const handleToggleLiveSafetyLock = async () => {
+    const nextState = !liveTradingAllowed;
+    try {
+      const res = await fetch("/api/coindcx/execution-guard/toggle", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ enable: nextState }),
+      });
+      const json = await res.json();
+      if (json.status === "success") {
+        setLiveTradingAllowed(json.liveTradingAllowed);
+      }
+    } catch {
+      setLiveTradingAllowed(nextState);
+    }
+  };
+
   // Data states
   const [funds, setFunds] = useState<any>(null);
   const [bias, setBias] = useState<any>(null);
@@ -230,11 +283,25 @@ export function App() {
 
   // Fetch tab-specific data on demand & periodic background refresh for funds
   useEffect(() => {
-    fetchPortfolioAndLedger(); // Always fetch funds on mount & symbol change for Header Capsule
+    const checkAuth = async () => {
+      try {
+        const cRes = await fetch("/api/coindcx/credentials/status").catch(() => null);
+        const cJson = cRes ? await cRes.json().catch(() => null) : null;
+        setAuthStatus({
+          binance: true,
+          coindcx: Boolean(cJson?.hasCredentials),
+        });
+        if (cJson?.liveTradingAllowed !== undefined) {
+          setLiveTradingAllowed(Boolean(cJson.liveTradingAllowed));
+        }
+      } catch {}
+    };
+    checkAuth();
+    fetchPortfolioAndLedger();
     if (activeTab === "bias") {
       fetchBias();
     }
-  }, [activeTab, selectedSymbol]);
+  }, [activeTab, selectedSymbol, selectedBroker]);
 
   const fetchBias = async () => {
     setLoading(true);
@@ -252,30 +319,60 @@ export function App() {
     setLoading(true);
     try {
       const [fRes, pRes, oRes, lRes, tcRes] = await Promise.all([
-        fetch("/api/funds"),
-        fetch("/api/positions"),
-        fetch("/api/orders"),
-        fetch("/api/ledger"),
-        fetch("/api/trader-controls"),
+        fetch(`${brokerApi}/funds`),
+        fetch(`${brokerApi}/positions`),
+        fetch(`${brokerApi}/orders`),
+        fetch(`${brokerApi}/ledger`).catch(() => new Response(JSON.stringify({ data: null }))),
+        fetch(`${brokerApi}/trader-controls`).catch(() => new Response(JSON.stringify({ killSwitch: null }))),
       ]);
       const [fJson, pJson, oJson, lJson, tcJson] = await Promise.all([
-        fRes.json(),
-        pRes.json(),
-        oRes.json(),
-        lRes.json(),
-        tcRes.json(),
+        fRes.json().catch(() => ({ data: null })),
+        pRes.json().catch(() => ({ data: [] })),
+        oRes.json().catch(() => ({ data: [] })),
+        lRes.json().catch(() => ({ data: null })),
+        tcRes.json().catch(() => ({ killSwitch: null })),
       ]);
       if (fJson.data) setFunds(fJson.data);
       if (pJson.data) setPositions(Array.isArray(pJson.data) ? pJson.data : []);
       if (oJson.data) setOrders(Array.isArray(oJson.data) ? oJson.data : []);
       if (lJson.data) setLedger(lJson.data);
-      if (tcJson.killSwitch) {
+      if (tcJson?.killSwitch) {
         setKillSwitchActive(tcJson.killSwitch.killSwitchStatus === "ACTIVATED");
       }
     } catch (e) {
       console.error("Portfolio fetch error:", e);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleCloseRealPosition = async (pos: any) => {
+    try {
+      const res = await fetch(`${brokerApi}/positions/close`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ symbol: pos.symbol, positionId: pos.positionId || pos.id }),
+      });
+      const json = await res.json();
+      if (json.status === "success") {
+        fetchPortfolioAndLedger();
+      }
+    } catch (e) {
+      console.error("Failed to close position:", e);
+    }
+  };
+
+  const handleCancelRealOrder = async (orderId: string) => {
+    try {
+      const res = await fetch(`${brokerApi}/orders/${orderId}`, {
+        method: "DELETE",
+      });
+      const json = await res.json();
+      if (json.status === "success") {
+        fetchPortfolioAndLedger();
+      }
+    } catch (e) {
+      console.error("Failed to cancel order:", e);
     }
   };
 
@@ -525,8 +622,22 @@ export function App() {
             }}
           >
             <span style={{ width: "6px", height: "6px", borderRadius: "50%", backgroundColor: wsConnected ? "#00F5A0" : "#FF495C" }} />
-            <span>{wsConnected ? "24×7 LIVE" : "OFFLINE"}</span>
+            <span>{wsConnected ? "BINANCE 24×7 FEED" : "OFFLINE"}</span>
           </div>
+
+          {/* Unified Execution Mode Control Bar */}
+          <ExecutionControlBar
+            execMode={execMode}
+            onSetExecMode={handleSetExecMode}
+            selectedBroker={selectedBroker}
+            onSetBroker={handleSetBroker}
+            execSubMode={execSubMode}
+            onSetSubMode={handleSetSubMode}
+            authStatus={authStatus}
+            onOpenAuthModal={() => setShowAuthModal(true)}
+            liveTradingAllowed={liveTradingAllowed}
+            onToggleLiveSafetyLock={handleToggleLiveSafetyLock}
+          />
 
           {/* AI Results Dashboard Button */}
           <button
@@ -692,7 +803,15 @@ export function App() {
                 </div>
 
                 <div style={{ flex: 1, minHeight: "520px" }}>
-                  <TradingViewChart adapter={adapterInstance} symbol={selectedSymbol} interval={selectedInterval} livePrice={tick?.ltp} tick={tick} />
+                  <TradingViewChart
+                    adapter={adapterInstance}
+                    symbol={selectedSymbol}
+                    interval={selectedInterval}
+                    livePrice={tick?.ltp}
+                    tick={tick}
+                    positions={execMode === "real" ? positions : undefined}
+                    orders={execMode === "real" ? orders : undefined}
+                  />
                 </div>
               </div>
 
@@ -941,21 +1060,51 @@ export function App() {
                           );
                         })()}
 
-                        {positions.map((p: any, idx: number) => (
-                          <tr key={idx} style={{ borderBottom: "1px solid var(--border-color)" }}>
-                            <td style={{ padding: "12px", fontWeight: 800 }}>{p.symbol}</td>
-                            <td style={{ padding: "12px" }}>{p.positionSide || p.side}</td>
-                            <td style={{ padding: "12px", textAlign: "right" }} className="mono">{p.positionAmt || p.qty}</td>
-                            <td style={{ padding: "12px", textAlign: "right" }} className="mono">${p.entryPrice}</td>
-                            <td style={{ padding: "12px", textAlign: "right" }} className="mono">${p.markPrice}</td>
-                            <td style={{ padding: "12px", textAlign: "right" }} className="mono">-</td>
-                            <td style={{ padding: "12px", textAlign: "right" }} className="mono">-</td>
-                            <td style={{ padding: "12px", textAlign: "right", fontWeight: 800, color: (p.unrealizedProfit || 0) >= 0 ? "#00F5A0" : "#FF495C" }} className="mono">
-                              ${p.unrealizedProfit}
-                            </td>
-                            <td style={{ padding: "12px", textAlign: "center" }}>-</td>
-                          </tr>
-                        ))}
+                        {positions.map((p: any, idx: number) => {
+                          const pnl = Number(p.unrealizedPnl ?? p.unrealizedProfit ?? 0);
+                          const isProfit = pnl >= 0;
+                          return (
+                            <tr key={idx} style={{ borderBottom: "1px solid var(--border-color)" }}>
+                              <td style={{ padding: "12px", fontWeight: 800, color: "var(--accent-cyan)" }}>{String(p.symbol || "").toUpperCase()}</td>
+                              <td style={{ padding: "12px" }}>
+                                <span style={{ padding: "2px 6px", borderRadius: "4px", fontWeight: 700, background: String(p.side || "").toUpperCase() === "LONG" || String(p.side || "").toUpperCase() === "BUY" ? "rgba(0, 245, 160, 0.2)" : "rgba(255, 73, 92, 0.2)", color: String(p.side || "").toUpperCase() === "LONG" || String(p.side || "").toUpperCase() === "BUY" ? "#00F5A0" : "#FF495C" }}>
+                                  {p.side || p.positionSide}
+                                </span>
+                              </td>
+                              <td style={{ padding: "12px", textAlign: "right" }} className="mono">{p.qty || p.positionAmt}</td>
+                              <td style={{ padding: "12px", textAlign: "right" }} className="mono">${formatPriceDynamic(Number(p.entryPrice))}</td>
+                              <td style={{ padding: "12px", textAlign: "right" }} className="mono">${formatPriceDynamic(Number(p.markPrice))}</td>
+                              <td style={{ padding: "12px", textAlign: "right", color: "#FF495C" }} className="mono">{p.stopLoss ? `$${formatPriceDynamic(Number(p.stopLoss))}` : "-"}</td>
+                              <td style={{ padding: "12px", textAlign: "right", color: "#00E5FF" }} className="mono">{p.takeProfit ? `$${formatPriceDynamic(Number(p.takeProfit))}` : "-"}</td>
+                              <td style={{ padding: "12px", textAlign: "right", fontWeight: 800, color: isProfit ? "#00F5A0" : "#FF495C" }} className="mono">
+                                {isProfit ? "+" : ""}${formatPriceDynamic(pnl, 2)}
+                              </td>
+                              <td style={{ padding: "12px", textAlign: "center" }}>
+                                {execSubMode === "live" ? (
+                                  <button
+                                    onClick={() => handleCloseRealPosition(p)}
+                                    style={{
+                                      padding: "4px 10px",
+                                      borderRadius: "4px",
+                                      background: "rgba(255, 73, 92, 0.2)",
+                                      border: "1px solid rgba(255, 73, 92, 0.5)",
+                                      color: "#FF495C",
+                                      fontWeight: 700,
+                                      fontSize: "11px",
+                                      cursor: "pointer",
+                                    }}
+                                  >
+                                    CLOSE ({selectedBroker.toUpperCase()})
+                                  </button>
+                                ) : (
+                                  <span style={{ fontSize: "10px", color: "var(--text-muted)", fontStyle: "italic" }}>
+                                    👁️ MONITOR ONLY
+                                  </span>
+                                )}
+                              </td>
+                            </tr>
+                          );
+                        })}
                       </tbody>
                     </table>
                   ) : (
@@ -978,20 +1127,45 @@ export function App() {
                           <th style={{ padding: "10px", textAlign: "right" }}>PRICE</th>
                           <th style={{ padding: "10px", textAlign: "right" }}>QTY</th>
                           <th style={{ padding: "10px", textAlign: "right" }}>STATUS</th>
+                          <th style={{ padding: "10px", textAlign: "center" }}>ACTION</th>
                         </tr>
                       </thead>
                       <tbody>
-                        {orders.map((o: any, idx: number) => (
-                          <tr key={idx} style={{ borderBottom: "1px solid var(--border-color)" }}>
-                            <td style={{ padding: "12px" }} className="mono">{new Date(o.time || Date.now()).toLocaleTimeString()}</td>
-                            <td style={{ padding: "12px", fontWeight: 800 }}>{o.symbol}</td>
-                            <td style={{ padding: "12px" }}>{o.type}</td>
-                            <td style={{ padding: "12px", color: o.side === "BUY" ? "#00F5A0" : "#FF495C", fontWeight: 700 }}>{o.side}</td>
-                            <td style={{ padding: "12px", textAlign: "right" }} className="mono">${o.price}</td>
-                            <td style={{ padding: "12px", textAlign: "right" }} className="mono">{o.origQty || o.qty}</td>
-                            <td style={{ padding: "12px", textAlign: "right" }} className="mono">{o.status}</td>
-                          </tr>
-                        ))}
+                        {orders.map((o: any, idx: number) => {
+                          const orderId = String(o.id || o.orderId || "");
+                          return (
+                            <tr key={idx} style={{ borderBottom: "1px solid var(--border-color)" }}>
+                              <td style={{ padding: "12px" }} className="mono">{o.createdAt ? new Date(o.createdAt).toLocaleTimeString() : new Date().toLocaleTimeString()}</td>
+                              <td style={{ padding: "12px", fontWeight: 800 }}>{String(o.symbol || "").toUpperCase()}</td>
+                              <td style={{ padding: "12px" }}>{o.type || o.order_type}</td>
+                              <td style={{ padding: "12px", color: String(o.side || "").toUpperCase() === "BUY" ? "#00F5A0" : "#FF495C", fontWeight: 700 }}>{o.side}</td>
+                              <td style={{ padding: "12px", textAlign: "right" }} className="mono">${formatPriceDynamic(Number(o.price))}</td>
+                              <td style={{ padding: "12px", textAlign: "right" }} className="mono">{o.qty || o.quantity || o.origQty}</td>
+                              <td style={{ padding: "12px", textAlign: "right" }} className="mono">{o.status}</td>
+                              <td style={{ padding: "12px", textAlign: "center" }}>
+                                {execSubMode === "live" && orderId ? (
+                                  <button
+                                    onClick={() => handleCancelRealOrder(orderId)}
+                                    style={{
+                                      padding: "3px 8px",
+                                      borderRadius: "4px",
+                                      background: "rgba(255, 73, 92, 0.15)",
+                                      border: "1px solid rgba(255, 73, 92, 0.4)",
+                                      color: "#FF495C",
+                                      fontWeight: 700,
+                                      fontSize: "10.5px",
+                                      cursor: "pointer",
+                                    }}
+                                  >
+                                    CANCEL
+                                  </button>
+                                ) : (
+                                  <span style={{ fontSize: "10px", color: "var(--text-muted)" }}>-</span>
+                                )}
+                              </td>
+                            </tr>
+                          );
+                        })}
                       </tbody>
                     </table>
                   ) : (
@@ -1078,6 +1252,15 @@ export function App() {
           )}
         </main>
       </div>
+
+      {/* Broker Credentials & Configuration Modal */}
+      {showAuthModal && (
+        <AuthCredentialsModal
+          selectedBroker={selectedBroker}
+          authStatus={authStatus}
+          onClose={() => setShowAuthModal(false)}
+        />
+      )}
     </div>
   );
 }

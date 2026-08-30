@@ -47,6 +47,16 @@ export interface FundsSnapshot {
   currency: string;
 }
 
+// Perpetual-futures-only metrics (funding rate, open interest, mark price).
+// Adapters for spot/equity markets (DhanHQ, non-perp CoinDCX pairs) simply omit
+// fetchPerpetualMetrics — this is opt-in, not part of the base contract.
+export interface PerpetualMetrics {
+  markPrice: number;
+  lastFundingRate: number;   // e.g. 0.0001 = 0.01%
+  nextFundingTime: number;   // unix ms
+  openInterest: number;      // in base asset units (e.g. BTC)
+}
+
 export interface IDataAdapter {
   // ── Identity ────────────────────────────────────────────────────────────────
   readonly id: string;          // "binance" | "dhanhq" | "coindcx" etc.
@@ -82,4 +92,7 @@ export interface IDataAdapter {
   fetchFunds?(): Promise<FundsSnapshot>;
   fetchPositions?(): Promise<any[]>;
   fetchOrders?(): Promise<any[]>;
+
+  // ── Perpetual futures metrics (optional — only meaningful for perp adapters) ──
+  fetchPerpetualMetrics?(symbol: string): Promise<PerpetualMetrics>;
 }

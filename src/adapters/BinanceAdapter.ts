@@ -1,6 +1,6 @@
 import type {
   IDataAdapter, Candle, OrderBookLevel, TickPayload,
-  SymbolDef, IntervalDef, FundsSnapshot,
+  SymbolDef, IntervalDef, FundsSnapshot, PerpetualMetrics,
 } from "./IDataAdapter";
 
 const safeCloseSocket = (socket: WebSocket | null) => {
@@ -85,6 +85,29 @@ export class BinanceAdapter implements IDataAdapter {
           low: parseFloat(k[3]),
           close: parseFloat(k[4]),
           volume: parseFloat(k[5]),
+        }));
+      }
+    } catch {}
+
+    // CoinDCX public fallback (since CoinDCX routes through Binance liquidity)
+    try {
+      const normSym = symbol.toLowerCase().replace(/[^a-z0-9]/g, "");
+      const pair = `B-${normSym.replace(/usdt$/i, "").toUpperCase()}_USDT`;
+      const coindcxRes = await fetch(`/api/coindcx/charts/intraday?symbol=${encodeURIComponent(normSym)}&interval=${encodeURIComponent(interval)}&limit=${limit}`);
+      if (coindcxRes.ok) {
+        const json = await coindcxRes.json();
+        if (Array.isArray(json?.candles) && json.candles.length > 0) return json.candles;
+      }
+      const directCoinDcx = await fetch(`https://public.coindcx.com/market_data/candles?pair=${pair}&interval=${interval.endsWith("m") ? interval : `${interval}m`}&limit=${limit}`);
+      if (directCoinDcx.ok) {
+        const raw = await directCoinDcx.json();
+        return (Array.isArray(raw) ? [...raw].reverse() : []).map((c: any) => ({
+          time: Math.floor((Number(c.time || c.open_time || 0) < 1e11 ? Number(c.time || c.open_time || 0) : Number(c.time || c.open_time || 0) / 1000)),
+          open: Number(c.open || 0),
+          high: Number(c.high || 0),
+          low: Number(c.low || 0),
+          close: Number(c.close || 0),
+          volume: Number(c.volume || c.vol || 0),
         }));
       }
     } catch {}
@@ -362,5 +385,27 @@ export class BinanceAdapter implements IDataAdapter {
       }
     } catch {}
     return [];
+  }
+
+  // Funding rate / mark price / open interest — USDT-M Futures only, public REST
+  // (no auth needed, same as the klines fallback above).
+  async fetchPerpetualMetrics(symbol: string): Promise<PerpetualMetrics> {
+    const normSym = symbol.toUpperCase().replace(/[^A-Z0-9]/g, "");
+    const binanceSym = normSym.endsWith("USDT") ? normSym : `${normSym}USDT`;
+
+    const [premiumRes, oiRes] = await Promise.all([
+      fetch(`https://fapi.binance.com/fapi/v1/premiumIndex?symbol=${binanceSym}`).catch(() => null),
+      fetch(`https://fapi.binance.com/fapi/v1/openInterest?symbol=${binanceSym}`).catch(() => null),
+    ]);
+
+    const premium = premiumRes?.ok ? await premiumRes.json() : null;
+    const oi = oiRes?.ok ? await oiRes.json() : null;
+
+    return {
+      markPrice: parseFloat(premium?.markPrice ?? "0") || 0,
+      lastFundingRate: parseFloat(premium?.lastFundingRate ?? "0") || 0,
+      nextFundingTime: Number(premium?.nextFundingTime ?? 0) || 0,
+      openInterest: parseFloat(oi?.openInterest ?? "0") || 0,
+    };
   }
 }
