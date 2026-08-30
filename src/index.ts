@@ -25,6 +25,8 @@ export { ExpiredOptionsTable } from "./components/ExpiredOptionsTable";
 export { OptDeskExpiryArchivePage } from "./components/OptDeskExpiryArchivePage";
 export { RiftDashboard } from "./components/RiftDashboard";
 export { SmcOverlayPrimitive } from "./components/SmcOverlayPrimitive";
+export { Market3DView, type Market3DProps, type Timeframe3D, type Candle3D, type MarketStats } from "./components/Market3DView";
+export { Market2DView } from "./components/Market2DView";
 
 // ── Research Workbenches ─────────────────────────────────────────────────────
 export { FuturesBacktestWorkbench } from "./components/research/FuturesBacktestWorkbench";
