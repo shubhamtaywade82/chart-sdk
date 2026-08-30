@@ -1,0 +1,134 @@
+/* 2D DepthCube — static grid layout (no floating overlays, unlike the 3D view) */
+
+.m2-root {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  background: #05070d;
+  color: #cbd5e1;
+  overflow: hidden;
+  font-family: var(--font-sans);
+}
+
+.m2-toolbar {
+  flex-shrink: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 16px;
+  padding: 8px 16px;
+  background: rgba(10, 15, 28, 0.6);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+.m2-toolbar-group { display: flex; align-items: center; gap: 4px; }
+.m2-toolbar-label { font-size: 9px; letter-spacing: 0.15em; color: #5c6f95; margin-right: 4px; }
+.m2-tf-btn { padding: 4px 10px; border-radius: 6px; font-size: 11px; font-weight: 600; color: #94a3b8; background: transparent; border: 1px solid transparent; cursor: pointer; }
+.m2-tf-btn:hover { color: #fff; }
+.m2-tf-btn.active { background: rgba(0, 224, 164, 0.15); color: #5ff2c8; border-color: rgba(0, 224, 164, 0.35); }
+.m2-toolbar-divider { width: 1px; height: 16px; background: rgba(255, 255, 255, 0.1); }
+.m2-bars-count { font-size: 11px; color: #5ff2c8; width: 24px; text-align: right; }
+.m2-check-label { display: flex; align-items: center; gap: 4px; color: #cbd5e1; cursor: pointer; font-size: 10px; }
+.m2-check-label input { accent-color: #00e0a4; }
+
+.m2-body {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.m2-chart-wrap {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  background: #05070d;
+}
+.m2-chart-wrap canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+  cursor: crosshair;
+}
+
+.m2-dock {
+  flex-shrink: 0;
+  width: 264px;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  border-left: 1px solid rgba(255, 255, 255, 0.05);
+  background: rgba(10, 15, 28, 0.5);
+}
+
+/* Order book ladder */
+.m2-ladder {
+  flex: 1 1 55%;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+}
+.m2-panel-head {
+  padding: 8px 12px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-family: var(--font-mono);
+}
+.m2-panel-title { font-size: 9px; letter-spacing: 0.15em; color: #5c6f95; font-weight: 700; }
+.m2-ladder-col-head {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  padding: 4px 12px;
+  font-size: 8px;
+  color: #64748b;
+  letter-spacing: 0.15em;
+  font-family: var(--font-mono);
+}
+.m2-ladder-col-head .right { text-align: right; }
+
+.m2-ladder-rows { flex: 1; overflow: hidden; padding: 0 4px; display: flex; flex-direction: column; }
+.m2-ladder-row {
+  position: relative;
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  padding: 3px 8px;
+  border-radius: 3px;
+  overflow: hidden;
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+.m2-ladder-row-fill { position: absolute; inset: 0 0 0 auto; }
+.m2-ladder-row-fill.ask { background: rgba(255, 79, 110, 0.16); }
+.m2-ladder-row-fill.bid { background: rgba(0, 224, 164, 0.16); }
+.m2-ladder-row-price { position: relative; }
+.m2-ladder-row-price.ask { color: #fda4af; }
+.m2-ladder-row-price.bid { color: #5ff2c8; }
+.m2-ladder-row-qty { position: relative; text-align: right; color: #cbd5e1; }
+.m2-ladder-row-cum { position: relative; text-align: right; color: #64748b; }
+
+.m2-ladder-mid {
+  flex-shrink: 0;
+  margin: 4px 8px;
+  padding: 6px 10px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-family: var(--font-mono);
+  font-size: 13px;
+}
+.m2-ladder-mid-price { color: #f1f5f9; font-weight: 700; }
+.m2-ladder-mid-spread { font-size: 9px; color: #94a3b8; }
+
+/* Trades tape dock (wraps the reused TimeAndSalesPanel, undoing its floating positioning) */
+.m2-tape-dock { flex: 1 1 45%; min-height: 0; overflow: hidden; position: relative; }
+.m2-tape-dock .m3-panel { display: flex; flex-direction: column; position: static; width: 100%; height: 100%; border: none; border-radius: 0; background: transparent; backdrop-filter: none; }
+.m2-tape-dock .m3-tape-list { flex: 1; height: auto; }
