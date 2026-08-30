@@ -46,7 +46,13 @@ export class WebSocketFeedService {
           engine.on("update", (msg: Exclude<EngineMessage, { type: "snapshot" }>) => {
             this.broadcast(entry!, msg);
           });
-          await engine.start();
+          try {
+            await engine.start();
+          } catch (err) {
+            this.engines.delete(symbol);
+            engine.stop();
+            throw err;
+          }
         }
         entry.subscriberCount++;
         entry.clients.add(ws);
