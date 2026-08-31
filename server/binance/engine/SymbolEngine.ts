@@ -1,7 +1,7 @@
 import { EventEmitter } from "events";
 import WebSocket from "ws";
 import { DepthBook, DepthEvent } from "./depthSync";
-import { computeCVD, computeImbalance, detectAbsorption, detectWalls } from "./derived";
+import { computeCVD, computeImbalance, computeWindowedCVD, detectAbsorption, detectWalls } from "./derived";
 import { fetchDepthSnapshot, fetchFundingAndOI, fetchKlines } from "./binanceRest";
 import { AbsorptionEvent, EngineCandle, EngineMessage, EngineTrade, FundingInfo, LiquidationEvent, WallLevel } from "./types";
 
@@ -20,6 +20,7 @@ const ABSORPTION_MULTIPLIER = 1.5;
 const ABSORPTION_WINDOW_MS = 30_000;
 const RECONNECT_BASE_MS = 1_000;
 const RECONNECT_MAX_MS = 15_000;
+const CVD_WINDOW_MS = 60_000;
 
 type UpdateMessage = Exclude<EngineMessage, { type: "snapshot" }>;
 
@@ -46,6 +47,7 @@ export class SymbolEngine extends EventEmitter {
   private fundingTimer: ReturnType<typeof setInterval> | null = null;
   private flushTimer: ReturnType<typeof setInterval> | null = null;
   private destroyed = false;
+  private resyncing = false;
 
   private pendingBookUpdate = false;
   private pendingTrades: EngineTrade[] = [];
@@ -58,9 +60,14 @@ export class SymbolEngine extends EventEmitter {
 
   async start(): Promise<void> {
     this.destroyed = false;
-    await this.seedKlines();
-    await this.resyncDepth();
+    // Open the stream FIRST so depth events buffer (see handleDepthEvent) while the
+    // snapshot/klines are fetched — fetching the snapshot before the stream is open
+    // guarantees the first live event's U > lastUpdateId, i.e. an immediate "gap".
     this.connectStream();
+    await this.seedKlines();
+    if (this.destroyed) return;
+    await this.resyncDepth();
+    if (this.destroyed) return;
     this.fundingTimer = setInterval(() => this.pollFunding(), FUNDING_POLL_MS);
     this.pollFunding();
     this.flushTimer = setInterval(() => this.flush(), BOOK_TRADE_FLUSH_MS);
@@ -73,6 +80,10 @@ export class SymbolEngine extends EventEmitter {
     if (this.flushTimer) clearInterval(this.flushTimer);
     if (this.ws) {
       this.ws.removeAllListeners();
+      // Closing a still-CONNECTING socket makes `ws` emit 'error' asynchronously (abortHandshake);
+      // removeAllListeners() just stripped that listener, so without this the emit has none and
+      // crashes the process (found while verifying Fix 2's crash-prevention live).
+      this.ws.on("error", () => {});
       try { this.ws.close(); } catch {}
       this.ws = null;
     }
@@ -92,6 +103,7 @@ export class SymbolEngine extends EventEmitter {
       },
       trades: this.trades.slice(0, 50),
       cvd: computeCVD(this.trades),
+      windowedCvd: computeWindowedCVD(this.trades, CVD_WINDOW_MS, Date.now()),
       walls,
       absorptions,
       imbalance: computeImbalance(state.bids, state.asks, IMBALANCE_DEPTH_LEVELS),
@@ -108,18 +120,27 @@ export class SymbolEngine extends EventEmitter {
   }
 
   private async resyncDepth(): Promise<void> {
-    this.depthSnapshotLoaded = false;
-    const snap = await fetchDepthSnapshot(this.symbol, DEPTH_SNAPSHOT_LIMIT);
-    this.book.loadSnapshot(snap);
-    this.depthSnapshotLoaded = true;
-    this.prevBidPrices = new Set(snap.bids.map(([p]) => Number(p)));
-    this.prevAskPrices = new Set(snap.asks.map(([p]) => Number(p)));
-    const now = Date.now();
-    this.bidFirstSeen = new Map([...this.prevBidPrices].map((p) => [p, now]));
-    this.askFirstSeen = new Map([...this.prevAskPrices].map((p) => [p, now]));
+    // Re-entrancy guard: a buffered-event replay below can itself hit a gap and call
+    // resyncDepth again — without this, the outer call's depthEventBuffer reset would
+    // wipe events the inner call still needs.
+    if (this.resyncing) return;
+    this.resyncing = true;
+    try {
+      this.depthSnapshotLoaded = false;
+      const snap = await fetchDepthSnapshot(this.symbol, DEPTH_SNAPSHOT_LIMIT);
+      this.book.loadSnapshot(snap);
+      this.depthSnapshotLoaded = true;
+      this.prevBidPrices = new Set(snap.bids.map(([p]) => Number(p)));
+      this.prevAskPrices = new Set(snap.asks.map(([p]) => Number(p)));
+      const now = Date.now();
+      this.bidFirstSeen = new Map([...this.prevBidPrices].map((p) => [p, now]));
+      this.askFirstSeen = new Map([...this.prevAskPrices].map((p) => [p, now]));
 
-    for (const evt of this.depthEventBuffer) this.applyDepthEvent(evt);
-    this.depthEventBuffer = [];
+      for (const evt of this.depthEventBuffer) this.applyDepthEvent(evt);
+      this.depthEventBuffer = [];
+    } finally {
+      this.resyncing = false;
+    }
   }
 
   private connectStream(): void {
@@ -148,8 +169,13 @@ export class SymbolEngine extends EventEmitter {
     this.reconnectTimer = setTimeout(async () => {
       this.reconnectTimer = null;
       if (this.destroyed) return;
-      await this.resyncDepth(); // reconnects always re-snapshot, per spec's resilience section
-      this.connectStream();
+      try {
+        await this.resyncDepth(); // reconnects always re-snapshot, per spec's resilience section
+        this.connectStream();
+      } catch (err) {
+        console.error(`[SymbolEngine:${this.symbol}] reconnect resync failed:`, err);
+        this.scheduleReconnect();
+      }
     }, delay);
   }
 
@@ -217,7 +243,10 @@ export class SymbolEngine extends EventEmitter {
   private applyDepthEvent(evt: DepthEvent): void {
     const result = this.book.applyEvent(evt);
     if (result === "gap") {
-      this.resyncDepth();
+      this.resyncDepth().catch((err) => {
+        console.error(`[SymbolEngine:${this.symbol}] gap resync failed:`, err);
+        this.scheduleReconnect();
+      });
       return;
     }
     if (result !== "applied") return;
@@ -304,8 +333,9 @@ export class SymbolEngine extends EventEmitter {
     }
     if (this.pendingTrades.length > 0) {
       const cvd = computeCVD(this.trades);
+      const windowedCvd = computeWindowedCVD(this.trades, CVD_WINDOW_MS, Date.now());
       for (const trade of this.pendingTrades) {
-        this.emitUpdate({ type: "trade", symbol: this.symbol, trade, cvd });
+        this.emitUpdate({ type: "trade", symbol: this.symbol, trade, cvd, windowedCvd });
       }
       this.pendingTrades = [];
     }

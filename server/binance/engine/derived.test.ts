@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { computeCVD, detectWalls, computeImbalance, detectAbsorption } from "./derived";
+import { computeCVD, computeWindowedCVD, detectWalls, computeImbalance, detectAbsorption } from "./derived";
 import { EngineTrade, DepthLevel, WallLevel } from "./types";
 
 function trade(price: number, qty: number, isSell: boolean): EngineTrade {
@@ -14,6 +14,23 @@ describe("computeCVD", () => {
 
   it("returns 0 for no trades", () => {
     expect(computeCVD([])).toBe(0);
+  });
+});
+
+describe("computeWindowedCVD", () => {
+  const now = 100_000;
+  const trades: EngineTrade[] = [
+    { id: 1, time: now - 1_000, price: 100, qty: 5, isSell: false, usd: 500 }, // in window
+    { id: 2, time: now - 30_000, price: 100, qty: 2, isSell: true, usd: 200 }, // in window
+    { id: 3, time: now - 90_000, price: 100, qty: 100, isSell: false, usd: 10_000 }, // outside window
+  ];
+
+  it("only sums trades within the window", () => {
+    expect(computeWindowedCVD(trades, 60_000, now)).toBe(5 - 2);
+  });
+
+  it("excludes older trades entirely as the window shrinks", () => {
+    expect(computeWindowedCVD(trades, 500, now)).toBe(0);
   });
 });
 

@@ -63,6 +63,7 @@ export type EngineMessage =
       book: OrderBookState;
       trades: EngineTrade[];
       cvd: number;
+      windowedCvd: number;
       walls: WallLevel[];
       imbalance: number;
       absorptions: AbsorptionEvent[];
@@ -78,6 +79,6 @@ export type EngineMessage =
       imbalance: number;
       absorptions: AbsorptionEvent[];
     }
-  | { type: "trade"; symbol: string; trade: EngineTrade; cvd: number }
+  | { type: "trade"; symbol: string; trade: EngineTrade; cvd: number; windowedCvd: number }
   | { type: "liquidation"; symbol: string; liq: LiquidationEvent }
   | { type: "funding"; symbol: string; funding: FundingInfo };

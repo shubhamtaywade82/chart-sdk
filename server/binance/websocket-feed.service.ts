@@ -8,6 +8,7 @@ interface SymbolEntry {
   engine: SymbolEngine;
   subscriberCount: number;
   clients: Set<WebSocket>;
+  startPromise: Promise<void>;
 }
 
 export class WebSocketFeedService {
@@ -22,38 +23,52 @@ export class WebSocketFeedService {
         if (!currentSymbol) return;
         const entry = this.engines.get(currentSymbol);
         if (entry) {
-          entry.clients.delete(ws);
-          entry.subscriberCount--;
-          if (entry.subscriberCount <= 0) {
-            entry.engine.stop();
-            this.engines.delete(currentSymbol);
-            console.log(`🧹 stopped engine for idle symbol: ${currentSymbol}`);
+          // Only decrement if this ws was actually registered — every subscriber now awaits
+          // entry.startPromise before joining entry.clients (Fix 3), so a close during that
+          // window must not decrement a count this client never added to.
+          if (entry.clients.delete(ws)) {
+            entry.subscriberCount--;
+            if (entry.subscriberCount <= 0) {
+              entry.engine.stop();
+              this.engines.delete(currentSymbol);
+              console.log(`🧹 stopped engine for idle symbol: ${currentSymbol}`);
+            }
           }
         }
         currentSymbol = null;
       };
 
       const subscribeTo = async (symbolRaw: string) => {
-        unsubscribeCurrent();
         const symbol = symbolRaw.toLowerCase();
+        // Re-subscribing to the symbol already active for this client is a no-op — tearing
+        // it down here would drive subscriberCount negative and kill a still-wanted engine.
+        if (currentSymbol === symbol) return;
+        unsubscribeCurrent();
         currentSymbol = symbol;
 
         let entry = this.engines.get(symbol);
         if (!entry) {
           const engine = new SymbolEngine(symbol, DEFAULT_INTERVAL);
-          entry = { engine, subscriberCount: 0, clients: new Set() };
+          const newEntry: SymbolEntry = {
+            engine,
+            subscriberCount: 0,
+            clients: new Set(),
+            startPromise: engine.start().catch((err) => {
+              this.engines.delete(symbol);
+              engine.stop();
+              throw err;
+            }),
+          };
+          entry = newEntry;
           this.engines.set(symbol, entry);
           engine.on("update", (msg: Exclude<EngineMessage, { type: "snapshot" }>) => {
-            this.broadcast(entry!, msg);
+            this.broadcast(newEntry, msg);
           });
-          try {
-            await engine.start();
-          } catch (err) {
-            this.engines.delete(symbol);
-            engine.stop();
-            throw err;
-          }
         }
+        // Shared across every subscriber to this symbol — a second subscriber arriving while
+        // the engine is still starting awaits the SAME promise instead of reading an empty snapshot.
+        await entry.startPromise;
+
         entry.subscriberCount++;
         entry.clients.add(ws);
 
@@ -67,7 +82,8 @@ export class WebSocketFeedService {
       ws.on("message", (raw) => {
         try {
           const parsed = JSON.parse(raw.toString());
-          if (parsed.type === "subscribe" && parsed.symbol) {
+          const isValidSymbol = typeof parsed.symbol === "string" && /^[a-zA-Z0-9]{2,20}$/.test(parsed.symbol);
+          if (parsed.type === "subscribe" && isValidSymbol) {
             subscribeTo(parsed.symbol).catch((err) => console.error("subscribe failed:", err));
           }
         } catch {}
@@ -96,7 +112,12 @@ export class WebSocketFeedService {
   private static toLegacyTick(snapshot: Extract<EngineMessage, { type: "snapshot" }>) {
     const last = snapshot.candles[snapshot.candles.length - 1];
     const prev = snapshot.candles[snapshot.candles.length - 2];
-    const ltp = last?.c ?? 0;
+    // Klines are the stream most likely to stall; prefer live trade price, then book mid,
+    // so the header price doesn't silently freeze. prevClose/change stay kline-derived (longer window).
+    const bestBid = snapshot.book.bids[0]?.price;
+    const bestAsk = snapshot.book.asks[0]?.price;
+    const midPrice = bestBid != null && bestAsk != null ? (bestBid + bestAsk) / 2 : undefined;
+    const ltp = snapshot.trades[0]?.price ?? midPrice ?? last?.c ?? 0;
     const prevClose = prev?.c ?? ltp;
     return {
       type: "tick",

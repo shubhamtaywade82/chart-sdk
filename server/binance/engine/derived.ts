@@ -4,6 +4,10 @@ export function computeCVD(trades: EngineTrade[]): number {
   return trades.reduce((sum, t) => sum + (t.isSell ? -t.qty : t.qty), 0);
 }
 
+export function computeWindowedCVD(trades: EngineTrade[], windowMs: number, now: number): number {
+  return computeCVD(trades.filter((t) => now - t.time <= windowMs));
+}
+
 export function detectWalls(
   levels: DepthLevel[],
   side: "bid" | "ask",
