@@ -1,16 +1,5 @@
-/* DepthCube 3D market view — scoped styles (Tailwind isn't set up in this package, see index.css) */
-
-.m3-root {
-  display: flex;
-  flex-direction: column;
-  width: 100%;
-  height: 100%;
-  background: #05070d;
-  color: #cbd5e1;
-  user-select: none;
-  overflow: hidden;
-  font-family: var(--font-sans);
-}
+/* Shared header + side-panel styles used by the 2D DepthCube market view
+   (Tailwind isn't set up in this package, see index.css) */
 
 /* Header */
 .m3-header {
@@ -53,78 +42,9 @@
 .m3-status-pill { display: flex; align-items: center; gap: 8px; padding: 6px 12px; border-radius: 999px; background: rgba(0, 0, 0, 0.4); border: 1px solid rgba(255, 255, 255, 0.05); }
 .m3-status-dot { width: 6px; height: 6px; border-radius: 999px; animation: m3-pulse 1.4s ease-in-out infinite; }
 
-/* Toolbar */
-.m3-toolbar {
-  position: absolute; top: 12px; left: 12px; z-index: 20;
-  background: rgba(10, 15, 28, 0.8); backdrop-filter: blur(12px);
-  border-radius: 12px; padding: 10px 12px; border: 1px solid rgba(255, 255, 255, 0.1);
-  display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px;
-  max-width: calc(100% - 24px); font-size: 12px; font-family: var(--font-mono);
-}
-.m3-toolbar-group { display: flex; align-items: center; gap: 4px; }
-.m3-toolbar-label { font-size: 9px; letter-spacing: 0.15em; color: #5c6f95; margin-right: 4px; }
-.m3-tf-btn { padding: 4px 10px; border-radius: 6px; font-size: 11px; font-weight: 600; color: #94a3b8; background: transparent; border: 1px solid transparent; cursor: pointer; }
-.m3-tf-btn:hover { color: #fff; }
-.m3-tf-btn.active { background: rgba(0, 224, 164, 0.15); color: #5ff2c8; border-color: rgba(0, 224, 164, 0.35); }
-.m3-toolbar-divider { width: 1px; height: 16px; background: rgba(255, 255, 255, 0.1); }
-
-.m3-bars-count { font-size: 11px; color: #5ff2c8; width: 24px; text-align: right; }
-.m3-checks { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; font-size: 10px; }
-.m3-check-label { display: flex; align-items: center; gap: 4px; color: #cbd5e1; cursor: pointer; }
-.m3-check-label input { accent-color: #00e0a4; }
-
-.m3-toggle-btn { padding: 4px 8px; border-radius: 6px; border: 1px solid rgba(255, 255, 255, 0.1); background: rgba(255, 255, 255, 0.05); color: #94a3b8; font-size: 10px; cursor: pointer; }
-.m3-toggle-btn.active { background: rgba(0, 224, 164, 0.15); color: #5ff2c8; border-color: rgba(0, 224, 164, 0.4); }
-.m3-toggle-btn:hover { color: #5ff2c8; background: rgba(0, 224, 164, 0.1); }
-
-/* Candle info card */
-.m3-candle-card {
-  display: none;
-  position: absolute; top: 345px; left: 12px; width: 212px;
-  background: rgba(10, 15, 28, 0.8); backdrop-filter: blur(12px);
-  border-radius: 12px; padding: 12px; border: 1px solid rgba(255, 255, 255, 0.1);
-  z-index: 20; font-family: var(--font-mono); font-size: 11px;
-}
-@media (min-width: 1024px) { .m3-candle-card { display: block; } }
-.m3-candle-card-head { display: flex; justify-content: space-between; align-items: center; padding-bottom: 8px; margin-bottom: 8px; border-bottom: 1px solid rgba(255, 255, 255, 0.1); }
-.m3-candle-grid { display: grid; grid-template-columns: 1fr 1fr; row-gap: 4px; }
-.m3-candle-grid .label { color: #64748b; }
-.m3-candle-grid .val { text-align: right; color: #e2e8f0; }
-
-/* Tooltip */
-.m3-tooltip {
-  pointer-events: none; position: absolute; z-index: 40;
-  background: rgba(10, 15, 28, 0.9); backdrop-filter: blur(12px);
-  border-radius: 6px; padding: 10px; border: 1px solid rgba(255, 255, 255, 0.15);
-  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
-  font-family: var(--font-mono); font-size: 10px; width: 176px;
-}
-.m3-tooltip-head { color: #94a3b8; padding-bottom: 4px; margin-bottom: 4px; border-bottom: 1px solid rgba(255, 255, 255, 0.1); display: flex; justify-content: space-between; }
-.m3-tooltip-row { display: flex; justify-content: space-between; }
-
-/* Legend */
-.m3-legend {
-  display: none;
-  position: absolute; bottom: 12px; left: 12px; z-index: 20;
-  background: rgba(10, 15, 28, 0.7); backdrop-filter: blur(12px);
-  border-radius: 6px; padding: 4px 10px; border: 1px solid rgba(255, 255, 255, 0.05);
-  align-items: center; gap: 12px; font-family: var(--font-mono); font-size: 9px; color: #94a3b8;
-}
-@media (min-width: 640px) { .m3-legend { display: flex; } }
-.m3-legend-item { display: flex; align-items: center; gap: 4px; }
-.m3-legend-swatch { width: 8px; height: 8px; border-radius: 2px; }
-
-/* Loading / fatal overlays */
-.m3-overlay-full { position: absolute; inset: 0; z-index: 50; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; }
-.m3-loading-overlay { background: rgba(5, 7, 13, 0.9); }
-.m3-fatal-overlay { background: #05070d; text-align: center; padding: 24px; }
-.m3-spinner { width: 32px; height: 32px; border-radius: 999px; border: 2px solid rgba(0, 224, 164, 0.2); border-top-color: #00e0a4; animation: m3-spin 0.8s linear infinite; }
-.m3-loading-text { font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.15em; color: #94a3b8; }
-
-@keyframes m3-spin { to { transform: rotate(360deg); } }
 @keyframes m3-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
 
-/* Side panels (order book / time & sales) */
+/* Side panels (time & sales; order book now uses market2d.css's own m2-ladder-* classes) */
 .m3-panel {
   display: none;
   position: absolute; width: 242px; z-index: 20;
@@ -133,26 +53,11 @@
   overflow: hidden; font-family: var(--font-mono); font-size: 10px;
 }
 @media (min-width: 768px) { .m3-panel { display: block; } }
-.m3-panel-book { top: 12px; right: 12px; }
 .m3-panel-tape { bottom: 48px; right: 12px; }
 .m3-panel-head { padding: 8px 12px; border-bottom: 1px solid rgba(255, 255, 255, 0.05); display: flex; align-items: center; justify-content: space-between; }
 .m3-panel-title { font-size: 9px; letter-spacing: 0.15em; color: #5c6f95; font-weight: 700; }
 .m3-panel-col-head { display: grid; grid-template-columns: 1fr 1fr 1fr; padding: 6px 12px 2px; font-size: 8px; color: #64748b; letter-spacing: 0.15em; }
 .m3-panel-col-head .right { text-align: right; }
-
-.m3-book-rows { padding: 0 4px; display: flex; flex-direction: column; gap: 1px; }
-.m3-book-row { position: relative; display: grid; grid-template-columns: 1fr 1fr 1fr; padding: 2px 8px; border-radius: 3px; overflow: hidden; }
-.m3-book-row-fill { position: absolute; inset: 0 0 0 auto; }
-.m3-book-row-fill.ask { background: rgba(255, 79, 110, 0.15); }
-.m3-book-row-fill.bid { background: rgba(0, 224, 164, 0.15); }
-.m3-book-row-price { position: relative; }
-.m3-book-row-price.ask { color: #fda4af; }
-.m3-book-row-price.bid { color: #5ff2c8; }
-.m3-book-row-qty { position: relative; text-align: right; color: #cbd5e1; }
-.m3-book-row-cum { position: relative; text-align: right; color: #64748b; }
-.m3-book-mid { margin: 4px 8px; padding: 4px 10px; border-radius: 6px; background: rgba(255, 255, 255, 0.03); border: 1px solid rgba(255, 255, 255, 0.05); display: flex; justify-content: space-between; align-items: center; font-size: 11px; }
-.m3-book-mid-price { color: #f1f5f9; font-weight: 600; }
-.m3-book-mid-spread { font-size: 9px; color: #94a3b8; }
 
 .m3-tape-list { height: 196px; overflow: hidden; padding: 4px 6px; display: flex; flex-direction: column; gap: 2px; }
 .m3-tape-row { display: grid; grid-template-columns: 1fr 1fr 1fr; padding: 2px 6px; border-radius: 3px; }

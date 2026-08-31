@@ -40,7 +40,7 @@ export function Market3DHeader({
     <header className="m3-header">
       <div className="m3-brand">
         <div className="m3-brand-name">DEPTH<span className="m3-brand-accent">CUBE</span></div>
-        <div className="m3-brand-tag">LIVE 3D ENGINE</div>
+        <div className="m3-brand-tag">LIVE MARKET ENGINE</div>
       </div>
 
       <div className="m3-divider-v" />

@@ -50,7 +50,6 @@
   },
   "dependencies": {
     "@monaco-editor/react": "^4.7.0",
-    "@types/three": "^0.185.4",
     "axios": "^1.13.6",
     "coindcx-client-js": "github:shubhamtaywade82/coindcx-client-js",
     "cors": "^2.8.5",
@@ -61,7 +60,6 @@
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "react-router-dom": "^7.1.5",
-    "three": "^0.185.1",
     "ws": "^8.19.0"
   },
   "devDependencies": {

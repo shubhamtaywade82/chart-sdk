@@ -16,11 +16,9 @@ import {
   Target,
   Wallet,
   Zap,
-  Box,
 } from "lucide-react";
 import { TradingViewChart, formatPriceDynamic, getPricePrecision } from "../../components/TradingViewChart";
 import { MarketDepthStream } from "../../components/MarketDepthStream";
-import { Market3DView } from "../../components/Market3DView";
 import { ConfluenceBacktestWorkbench } from "../../components/research/ConfluenceBacktestWorkbench";
 
 interface TickData {
@@ -43,10 +41,8 @@ interface SessionInfo {
 }
 
 export function App() {
-  const VALID_TABS = ["terminal", "market_3d", "confluence_backtest", "portfolio"] as const;
-  const [activeTab, setActiveTab] = useState<"terminal" | "market_3d" | "confluence_backtest" | "portfolio">(() => {
-    const urlTab = new URLSearchParams(window.location.search).get("tab");
-    if (urlTab === "3d" || urlTab === "market_3d") return "market_3d";
+  const VALID_TABS = ["terminal", "confluence_backtest", "portfolio"] as const;
+  const [activeTab, setActiveTab] = useState<"terminal" | "confluence_backtest" | "portfolio">(() => {
     const saved = localStorage.getItem("coindcx_activeTab");
     return (VALID_TABS.includes(saved as any) ? saved : "terminal") as any;
   });
@@ -434,7 +430,6 @@ export function App() {
             </div>
             {[
               { id: "terminal", label: "Real-Time Terminal", icon: BarChart2 },
-              { id: "market_3d", label: "3D DepthCube Market", icon: Box },
               { id: "confluence_backtest", label: "SMC/ICT Confluence Backtest", icon: Activity },
               { id: "portfolio", label: `Positions & Account (${positions.length})`, icon: Target },
             ].map((t) => {
@@ -469,7 +464,7 @@ export function App() {
         )}
 
         {/* Center Main Dashboard */}
-        <main style={{ flex: 1, padding: activeTab === "market_3d" ? "0px" : "16px 20px", display: "flex", flexDirection: "column", gap: "16px", overflowX: "hidden", minWidth: 0 }}>
+        <main style={{ flex: 1, padding: "16px 20px", display: "flex", flexDirection: "column", gap: "16px", overflowX: "hidden", minWidth: 0 }}>
 
           {/* TAB 1: TERMINAL & CHART — real positions drawn on the chart */}
           {activeTab === "terminal" && (
@@ -521,16 +516,6 @@ export function App() {
                   <MarketDepthStream bids={tick?.bids || []} asks={tick?.asks || []} symbol={selectedSymbol} />
                 </div>
               )}
-            </div>
-          )}
-
-          {/* TAB: 3D MARKET VIEW */}
-          {activeTab === "market_3d" && (
-            <div style={{ flex: 1, minHeight: "520px", minWidth: 0, width: "100%", height: "100%", overflow: "hidden" }}>
-              <Market3DView
-                symbol={selectedSymbol}
-                onSymbolChange={(sym) => setSelectedSymbol(sym.toLowerCase())}
-              />
             </div>
           )}
 

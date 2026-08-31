@@ -26,12 +26,10 @@ import {
   Sliders,
   TrendingUp,
   Zap,
-  Box,
   Brain,
 } from "lucide-react";
 import { TradingViewChart } from "../../components/TradingViewChart";
 import { MarketDepthStream } from "../../components/MarketDepthStream";
-import { Market3DView } from "../../components/Market3DView";
 import { ExpiredOptionsTable } from "../../components/ExpiredOptionsTable";
 import { OptionsResearchWorkbench } from "../../components/research_dhanhq/OptionsResearchWorkbench";
 import { OptDeskExpiryArchivePage } from "../../components/OptDeskExpiryArchivePage";
@@ -69,10 +67,8 @@ const SYMBOL_ID_MAP: Record<string, { id: string; segment: string; instrument: s
 };
 
 export function App() {
-  const VALID_TABS = ["terminal", "market_3d", "ai_supertrend", "options", "expired", "optdesk", "bias", "portfolio"] as const;
-  const [activeTab, setActiveTab] = useState<"terminal" | "market_3d" | "ai_supertrend" | "options" | "expired" | "optdesk" | "confluence_backtest" | "bias" | "portfolio">(() => {
-    const urlTab = new URLSearchParams(window.location.search).get("tab");
-    if (urlTab === "3d" || urlTab === "market_3d") return "market_3d";
+  const VALID_TABS = ["terminal", "ai_supertrend", "options", "expired", "optdesk", "bias", "portfolio"] as const;
+  const [activeTab, setActiveTab] = useState<"terminal" | "ai_supertrend" | "options" | "expired" | "optdesk" | "confluence_backtest" | "bias" | "portfolio">(() => {
     const saved = localStorage.getItem("dhan_activeTab");
     return (VALID_TABS.includes(saved as any) ? saved : "terminal") as any;
   });
@@ -794,7 +790,6 @@ export function App() {
 
             {[
               { id: "terminal", label: "Real-Time Terminal", icon: BarChart2 },
-              { id: "market_3d", label: "3D DepthCube Market", icon: Box },
               { id: "ai_supertrend", label: "AI Supertrend & Ollama", icon: Brain },
               { id: "options", label: "Option Chain & Greeks", icon: Layers },
               { id: "expired", label: "Expired Research Workbench", icon: Database },
@@ -834,7 +829,7 @@ export function App() {
         )}
 
         {/* Center Main Dashboard Area */}
-        <main style={{ flex: 1, padding: activeTab === "market_3d" ? "0px" : "16px 20px", display: "flex", flexDirection: "column", gap: "16px", overflowX: "hidden", minWidth: 0 }}>
+        <main style={{ flex: 1, padding: "16px 20px", display: "flex", flexDirection: "column", gap: "16px", overflowX: "hidden", minWidth: 0 }}>
 
           {/* TAB 1: TERMINAL & CHART WITH OPTIONAL RIGHT 20-DEPTH SIDEBAR */}
           {activeTab === "terminal" && (
@@ -885,16 +880,6 @@ export function App() {
                   <MarketDepthStream bids={tick?.bids || []} asks={tick?.asks || []} symbol={selectedSymbol} />
                 </div>
               )}
-            </div>
-          )}
-
-          {/* TAB: 3D MARKET VIEW */}
-          {activeTab === "market_3d" && (
-            <div style={{ flex: 1, minHeight: "520px", minWidth: 0, width: "100%", height: "100%", overflow: "hidden" }}>
-              <Market3DView
-                symbol={selectedSymbol}
-                onSymbolChange={(sym) => setSelectedSymbol(sym.toLowerCase())}
-              />
             </div>
           )}
 
