@@ -26,6 +26,7 @@ import {
   Sliders,
   TrendingUp,
   Zap,
+  Brain,
 } from "lucide-react";
 import { TradingViewChart } from "../../components/TradingViewChart";
 import { MarketDepthStream } from "../../components/MarketDepthStream";
@@ -34,7 +35,6 @@ import { OptionsResearchWorkbench } from "../../components/research_dhanhq/Optio
 import { OptDeskExpiryArchivePage } from "../../components/OptDeskExpiryArchivePage";
 import { AdaptiveSupertrendWorkbench } from "../../components/research/AdaptiveSupertrendWorkbench";
 import { ConfluenceBacktestWorkbench } from "../../components/research/ConfluenceBacktestWorkbench";
-import { Brain } from "lucide-react";
 
 interface TickData {
   symbol: string;
@@ -864,13 +864,21 @@ export function App() {
                 </div>
 
                 <div style={{ flex: 1, minHeight: "520px" }}>
-                  <TradingViewChart adapter={adapterInstance} symbol={selectedSymbol} interval={selectedInterval} livePrice={tick?.ltp} tick={tick} />
+                  <TradingViewChart
+                    adapter={adapterInstance}
+                    symbol={selectedSymbol}
+                    interval={selectedInterval}
+                    livePrice={tick?.ltp}
+                    tick={tick}
+                  />
                 </div>
               </div>
 
-              {/* Right Collapsible 20-Depth Panel */}
+              {/* Right Order Book / Depth 20 */}
               {showDepthPanel && (
-                <MarketDepthStream bids={tick?.bids || []} asks={tick?.asks || []} symbol={selectedSymbol} />
+                <div style={{ height: "100%", overflow: "hidden" }}>
+                  <MarketDepthStream bids={tick?.bids || []} asks={tick?.asks || []} symbol={selectedSymbol} />
+                </div>
               )}
             </div>
           )}

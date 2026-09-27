@@ -5,7 +5,7 @@ import http from "http";
 import path from "path";
 import { fileURLToPath } from "url";
 import { WebSocketServer, WebSocket } from "ws";
-import { CoinDCXFuturesClient } from "coindcx-client-js";
+import { CoinDCXClient } from "@nemesis-oss/coindcx-sdk";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -40,6 +40,20 @@ const pairToSymbol = (pair: string): string => {
   return `${match[1]}${match[2]}`.toLowerCase();
 };
 
+const pairToBaseQuote = (pair: string): { base: string; quote: string } => {
+  const match = String(pair || "").match(/^[A-Z]-([A-Z0-9]+)_([A-Z0-9]+)$/);
+  return match ? { base: match[1], quote: match[2] } : { base: pair, quote: "USDT" };
+};
+
+const depthMapToLevels = (
+  map: Record<string, number | string> | undefined
+): { price: number; quantity: number; orders: number }[] => {
+  if (!map) return [];
+  return Object.entries(map)
+    .map(([price, qty]) => ({ price: Number(price), quantity: Number(qty), orders: 0 }))
+    .filter((l) => l.quantity > 0);
+};
+
 const intervalToCoindcx = (interval: string): string => {
   const k = String(interval || "").trim().toLowerCase();
   if (k === "60" || k === "1h") return "1h";
@@ -62,8 +76,8 @@ const round = (n: any, d = 6): number => {
   return Number(v.toFixed(d));
 };
 
-// coindcx-client-js passes data:null on GET requests, which CoinDCX rejects (422);
-// hit the public market-data API directly instead.
+// Public candle history has no auth requirement; hit CoinDCX's public
+// market-data API directly instead of routing it through the signed client.
 const publicGet = async (path: string, params: Record<string, any>) => {
   const { default: axios } = await import("axios");
   const res = await axios({
@@ -84,15 +98,15 @@ const getFuturesCandles = async (pair: string, from?: number, to?: number, resol
   return (Array.isArray(res) ? [...res].reverse() : []).map(candleToNormalized);
 };
 
-const getClient = (): CoinDCXFuturesClient => {
-  return new CoinDCXFuturesClient({
+const getClient = (): CoinDCXClient => {
+  return new CoinDCXClient({
     apiKey: FUTURES_API_KEY,
     apiSecret: FUTURES_API_SECRET,
     debug: process.env.COINDCX_DEBUG === "true",
   });
 };
 
-const requireClient = (): CoinDCXFuturesClient => {
+const requireClient = (): CoinDCXClient => {
   if (!FUTURES_API_KEY || !FUTURES_API_SECRET) {
     throw new Error("CoinDCX credentials not configured — set COINDCX_API_KEY/COINDCX_API_SECRET in .env");
   }
@@ -100,46 +114,51 @@ const requireClient = (): CoinDCXFuturesClient => {
 };
 
 const normalizePosition = (p: any) => {
-  const pair = p.pair || p.symbol || "";
-  const size = Math.abs(round(p.size ?? p.quantity ?? p.qty));
-  const rawSide = String(p.side || p.position_side || "").toLowerCase();
-  const side = rawSide.startsWith("short") ? "SHORT" : rawSide.startsWith("long") ? "LONG" : size > 0 ? (Number(p.size) < 0 ? "SHORT" : "LONG") : "LONG";
+  const pair = p.pair || "";
+  const size = Math.abs(round(p.size));
+  const side = String(p.side || "").toUpperCase() === "SHORT" ? "SHORT" : "LONG";
   return {
-    positionId: String(p.position_id ?? p.id ?? ""),
+    positionId: String(p.id ?? ""),
     pair,
     symbol: pairToSymbol(pair),
     side,
     qty: size,
-    entryPrice: round(p.entry_price ?? p.entryPrice),
-    markPrice: round(p.mark_price ?? p.markPrice),
-    stopLoss: round(p.stop_loss ?? p.stopLoss),
-    takeProfit: round(p.take_profit ?? p.takeProfit),
-    liquidationPrice: round(p.liquidation_price ?? p.liquidationPrice),
+    entryPrice: round(p.entry_price),
+    markPrice: round(p.mark_price),
+    // ponytail: coindcx-sdk's PositionResponse doesn't carry stop_loss/take_profit
+    // (those live on bracket orders, not the position). Wire up createTPSL if the
+    // UI needs these displayed again.
+    stopLoss: 0,
+    takeProfit: 0,
+    liquidationPrice: round(p.liquidation_price),
     margin: round(p.margin),
     leverage: Number(p.leverage || 1),
-    unrealizedPnl: round(p.unrealised_pnl ?? p.unrealized_pnl ?? p.pnl),
+    unrealizedPnl: round(p.unrealized_pnl),
     marginType: p.margin_type || "cross",
-    createdAt: p.created_at || null,
+    createdAt: p.timestamp || null,
   };
 };
 
-const normalizeWallet = (wallets: any[]) => {
+const normalizeWallet = (wallets: any[], unrealizedPnl: number) => {
   const rows = Array.isArray(wallets) ? wallets : [];
   const usdt = rows.find((w) => w.currency === "USDT") || rows[0] || {};
-  const availMargin = round(usdt.available_balance ?? usdt.availableBalance ?? 0);
-  const usedMargin = round(usdt.margin_used ?? usdt.marginUsed ?? 0);
-  const unrealizedPnl = round(usdt.unrealised_pnl ?? usdt.unrealizedPnl ?? 0);
+  const availMargin = round(usdt.available_balance ?? 0);
+  const balance = round(usdt.balance ?? 0);
+  const locked = round(usdt.locked_balance ?? 0);
+  // ponytail: coindcx-sdk's FuturesWalletResponse has no margin_used field;
+  // derive it from balance - available - locked (funds tied up in open positions).
+  const usedMargin = Math.max(0, round(balance - availMargin - locked));
   return {
     availMargin,
     usedMargin,
     equity: availMargin + usedMargin + unrealizedPnl,
     currency: usdt.currency || "USDT",
-    unrealizedPnl,
+    unrealizedPnl: round(unrealizedPnl),
     balances: rows.map((w) => ({
       currency: w.currency,
-      availableBalance: round(w.available_balance ?? w.availableBalance),
-      marginUsed: round(w.margin_used ?? w.marginUsed),
-      unrealizedPnl: round(w.unrealised_pnl ?? w.unrealizedPnl),
+      availableBalance: round(w.available_balance),
+      marginUsed: Math.max(0, round((w.balance ?? 0) - (w.available_balance ?? 0) - (w.locked_balance ?? 0))),
+      unrealizedPnl: 0,
     })),
   };
 };
@@ -175,9 +194,15 @@ app.get("/api/health", (_req, res) => {
 app.get("/api/funds", async (_req, res) => {
   try {
     const client = requireClient();
-    // client marks the futures wallet route as public; hit it via the private path so auth headers are attached
-    const data = await (client as any)._request("GET", "/exchange/v1/derivatives/futures/wallets", {});
-    res.json({ status: "success", data: normalizeWallet(data) });
+    const [wallets, positions] = await Promise.all([
+      client.futures.account.getWallet(),
+      client.futures.account.getPositions({}),
+    ]);
+    const unrealizedPnl = (Array.isArray(positions) ? positions : []).reduce(
+      (sum: number, p: any) => sum + Number(p.unrealized_pnl || 0),
+      0
+    );
+    res.json({ status: "success", data: normalizeWallet(wallets, unrealizedPnl) });
   } catch (err: any) {
     res.status(err.status || 500).json({ error: err.message, details: err.data });
   }
@@ -186,7 +211,7 @@ app.get("/api/funds", async (_req, res) => {
 app.get("/api/positions", async (_req, res) => {
   try {
     const client = requireClient();
-    const raw = await client.getFuturesPositions({});
+    const raw = await client.futures.account.getPositions({});
     const data = (Array.isArray(raw) ? raw : []).map(normalizePosition);
     res.json({ status: "success", data });
   } catch (err: any) {
@@ -197,17 +222,17 @@ app.get("/api/positions", async (_req, res) => {
 app.get("/api/orders", async (_req, res) => {
   try {
     const client = requireClient();
-    const raw = await client.listFuturesOrders({});
+    const raw = await client.futures.account.listOrders({});
     const data = (Array.isArray(raw) ? raw : []).map((o: any) => ({
-      id: String(o.id ?? o.order_id ?? ""),
-      pair: o.pair || o.symbol || "",
-      symbol: pairToSymbol(o.pair || o.symbol || ""),
+      id: String(o.id ?? ""),
+      pair: o.pair || "",
+      symbol: pairToSymbol(o.pair || ""),
       side: String(o.side || "").toUpperCase(),
-      type: o.order_type || o.type || "LIMIT",
+      type: o.order_type || "LIMIT",
       price: round(o.price),
-      qty: round(o.quantity ?? o.qty),
+      qty: round(o.target_quantity),
       status: o.status || "open",
-      createdAt: o.created_at || o.createdAt || null,
+      createdAt: o.created_at || null,
     }));
     res.json({ status: "success", data });
   } catch (err: any) {
@@ -229,7 +254,7 @@ app.post("/api/trader-controls/killswitch", async (_req, res) => {
     if (coindcxKillSwitch) {
       try {
         const client = requireClient();
-        await client.cancelAllFuturesOrders();
+        await client.futures.trading.cancelAllOrders({ pair: undefined, side: undefined });
       } catch {}
     }
     res.json({ status: "success", killSwitch: { killSwitchStatus: coindcxKillSwitch ? "ACTIVATED" : "DEACTIVATED" } });
@@ -276,17 +301,36 @@ app.post("/api/orders", async (req, res) => {
     const client = requireClient();
     const { symbol, side, orderType, price, quantity, leverage, stopPrice } = req.body;
     const pair = symbolToPair(symbol || "BTCUSDT");
-    const orderPayload: any = {
-      pair,
-      side: String(side || "buy").toLowerCase(),
-      order_type: String(orderType || "limit_order").toLowerCase(),
-      total_quantity: Number(quantity),
-      leverage: Number(leverage || 1),
-    };
-    if (price && Number(price) > 0) orderPayload.price = Number(price);
-    if (stopPrice && Number(stopPrice) > 0) orderPayload.stop_price = Number(stopPrice);
+    const normalizedOrderType = String(orderType || "limit_order").toLowerCase();
 
-    const result = await client.createFuturesOrder(orderPayload);
+    if (normalizedOrderType === "stop_limit_order" && stopPrice) {
+      // coindcx-sdk's CreateFuturesOrderRequest has no entry-trigger price field
+      // (only stop_loss/take_profit brackets on an existing position). Fail fast
+      // instead of silently placing an unprotected market/limit order.
+      res.status(400).json({
+        error:
+          "stop_limit orders are not supported via @nemesis-oss/coindcx-sdk's createOrder — use limit/market orders, or attach stop-loss/take-profit via a bracket order.",
+      });
+      return;
+    }
+
+    const { base, quote } = pairToBaseQuote(pair);
+    const orderPayload = {
+      base_currency: base,
+      quote_currency: quote,
+      side: String(side || "buy").toLowerCase() as "buy" | "sell",
+      order_type: normalizedOrderType as "market_order" | "limit_order" | "stop_limit_order",
+      target_quantity: Number(quantity),
+      leverage: Number(leverage || 1),
+      price: price && Number(price) > 0 ? Number(price) : undefined,
+      client_order_id: undefined,
+      time_in_force: undefined,
+      stop_loss: undefined,
+      take_profit: undefined,
+      margin_type: undefined,
+    };
+
+    const result = await client.futures.trading.createOrder(orderPayload);
     res.json({ status: "success", data: result });
   } catch (err: any) {
     res.status(err.status || 500).json({ error: err.message, details: err.data });
@@ -297,7 +341,7 @@ app.delete("/api/orders/:id", async (req, res) => {
   if (!checkLiveTradingGuard(res)) return;
   try {
     const client = requireClient();
-    const result = await client.cancelFuturesOrder(req.params.id);
+    const result = await client.futures.trading.cancelOrder({ id: req.params.id });
     res.json({ status: "success", data: result });
   } catch (err: any) {
     res.status(err.status || 500).json({ error: err.message, details: err.data });
@@ -311,10 +355,10 @@ app.post("/api/positions/close", async (req, res) => {
     const { symbol, positionId } = req.body;
     let result;
     if (positionId) {
-      result = await client.closeFuturesPosition(positionId);
+      result = await client.futures.trading.closePosition({ id: positionId });
     } else if (symbol) {
       const pair = symbolToPair(symbol);
-      result = await client.exitFuturesPosition(pair);
+      result = await client.futures.trading.exitPosition({ pair });
     }
     res.json({ status: "success", data: result });
   } catch (err: any) {
@@ -358,24 +402,40 @@ app.get("/api/charts/historical", async (req, res) => {
 });
 
 // ── Live market + account feed bridge ──
-let dealClient: CoinDCXFuturesClient | null = null;
+let dealClient: CoinDCXClient | null = null;
 let clientConnected = false;
 let accountWsStarted = false;
 
-const depthByPair = new Map<string, { bids: any[]; asks: any[] }>();
+const depthByPair = new Map<string, { bids: { price: number; quantity: number; orders: number }[]; asks: { price: number; quantity: number; orders: number }[] }>();
 const lastTickByPair = new Map<string, { price: number; change: number; pChange: number; prevClose: number }>();
 
-const ensureDealClient = async (): Promise<CoinDCXFuturesClient | null> => {
+// coindcx-sdk's PublicStreams.onDepthSnapshot/onDepthUpdate normalize away the
+// pair the update belongs to, so multi-pair depth can't be routed through them.
+// Hook the raw socket events instead — same shape the SDK's own normalizeDepth
+// reads from, just without dropping the pair field.
+const parseRawWsPayload = (raw: any): any =>
+  raw?.data && typeof raw.data === "string" ? JSON.parse(raw.data) : raw;
+
+const handleRawDepth = (raw: any) => {
+  const p = parseRawWsPayload(raw);
+  const pair = p?.pair ?? p?.s ?? "unknown";
+  depthByPair.set(pair, {
+    bids: depthMapToLevels(p?.bids).sort((a, b) => b.price - a.price),
+    asks: depthMapToLevels(p?.asks).sort((a, b) => a.price - b.price),
+  });
+};
+
+const ensureDealClient = async (): Promise<CoinDCXClient | null> => {
   if (dealClient && clientConnected) return dealClient;
   if (dealClient) {
-    try { dealClient.wsDisconnect(); } catch {}
+    try { dealClient.ws.disconnect(); } catch {}
   }
-  dealClient = new CoinDCXFuturesClient({
+  dealClient = new CoinDCXClient({
     apiKey: FUTURES_API_KEY,
     apiSecret: FUTURES_API_SECRET,
     debug: process.env.COINDCX_DEBUG === "true",
   });
-  dealClient.on("ws:candlestick", (candle: any) => {
+  dealClient.publicStreams.on("onCandle", (candle: any) => {
     const sym = pairToSymbol(candle.pair || candle.symbol || "");
     const msg = {
       type: "candle",
@@ -394,10 +454,10 @@ const ensureDealClient = async (): Promise<CoinDCXFuturesClient | null> => {
       lastTickByPair.set(candle.pair || "", { price: Number(candle.close), change: 0, pChange: 0, prevClose: Number(candle.open) });
     }
   });
-  dealClient.on("ws:depth-snapshot", (depth: any) => { depthByPair.set(depth.pair || "", { bids: depth.bids || [], asks: depth.asks || [] }); });
-  dealClient.on("ws:depth-update", (depth: any) => { depthByPair.set((depth as any).pair || "", { bids: depth.bids || [], asks: depth.asks || [] }); });
-  dealClient.on("ws:price-change", (update: any) => {
-    const pair = update.pair || update.symbol || "";
+  dealClient.ws.on("depth-snapshot", handleRawDepth);
+  dealClient.ws.on("depth-update", handleRawDepth);
+  dealClient.publicStreams.on("onPriceChange", (update: any) => {
+    const pair = update.symbol || "";
     const prev = lastTickByPair.get(pair);
     const price = Number(update.price);
     if (prev && prev.price > 0) {
@@ -406,15 +466,15 @@ const ensureDealClient = async (): Promise<CoinDCXFuturesClient | null> => {
     }
     lastTickByPair.set(pair, { price, change: prev?.change || 0, pChange: prev?.pChange || 0, prevClose: prev?.prevClose || price });
   });
-  dealClient.on("ws:df-position-update", (data: any) => broadcast({ type: "account", kind: "positions", data }));
-  dealClient.on("ws:df-order-update", (data: any) => broadcast({ type: "account", kind: "orders", data }));
-  dealClient.on("ws:balance-update", (data: any) => broadcast({ type: "account", kind: "balances", data }));
+  dealClient.privateStreams.on("onPositionUpdate", (data: any) => broadcast({ type: "account", kind: "positions", data }));
+  dealClient.privateStreams.on("onOrderUpdate", (data: any) => broadcast({ type: "account", kind: "orders", data }));
+  dealClient.privateStreams.on("onBalanceUpdate", (data: any) => broadcast({ type: "account", kind: "balances", data }));
 
   try {
-    await dealClient.wsConnect();
-    dealClient.wsSubscribeCurrentPricesFutures();
+    await dealClient.connectWebsocket();
+    dealClient.publicStreams.subscribeCurrentPricesFutures();
     if (FUTURES_API_KEY && FUTURES_API_SECRET) {
-      try { dealClient.wsSubscribeAccountFutures(); accountWsStarted = true; } catch {}
+      try { dealClient.subscribePrivateStreams(); accountWsStarted = true; } catch {}
     }
     clientConnected = true;
     return dealClient;
@@ -432,9 +492,9 @@ const subscribePair = async (pair: string) => {
   subscribersByPair.set(pair, count);
   const client = await ensureDealClient();
   if (!client) return;
-  client.wsSubscribeCandles(pair, "1m");
-  client.wsSubscribeOrderBook(pair, 50);
-  client.wsSubscribePrices(pair);
+  client.publicStreams.subscribeCandles(pair, "1m");
+  client.publicStreams.subscribeOrderBook(pair, 50);
+  client.publicStreams.subscribePrices(pair);
 };
 
 const unsubscribePair = (pair: string) => {

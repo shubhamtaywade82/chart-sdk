@@ -16,6 +16,31 @@ export interface ConfidenceFactorBreakdown {
   tier: ConfidenceTier;
 }
 
+export interface ClusterMetadata {
+  perfBestCentroid: number;
+  perfAverageCentroid: number;
+  perfWorstCentroid: number;
+  perfBestDispersion: number;
+  perfAverageDispersion: number;
+  perfWorstDispersion: number;
+  stateBullCentroid: number;
+  stateNeutralCentroid: number;
+  stateBearCentroid: number;
+  stateBullDispersion: number;
+  stateNeutralDispersion: number;
+  stateBearDispersion: number;
+  bestClusterStability: number;
+  bullClusterStability: number;
+}
+
+export interface ClusteringOptions {
+  step?: number;
+  perfAlpha?: number;
+  fromCluster?: "Best" | "Average" | "Worst";
+  oscSmooth?: number;
+  maxIter?: number;
+}
+
 export interface SupertrendPoint {
   time: number;
   trend: TrendDirection;
@@ -27,6 +52,19 @@ export interface SupertrendPoint {
   signal: SignalType | null;
   confidence: number;
   confidenceTier: ConfidenceTier;
+  ama?: number;
+  perfIdx?: number;
+  targetFactor?: number;
+  bull?: number;
+  neutral?: number;
+  bear?: number;
+  strongBull?: boolean;
+  strongBear?: boolean;
+  tradeBias?: "LONG BIAS" | "SHORT BIAS" | "WAIT";
+  tradeState?: "STRONG BULL" | "STRONG BEAR" | "BULL" | "BEAR" | "NEUTRAL";
+  oscSpread?: number;
+  priceToStopAtr?: number;
+  clusterMetadata?: ClusterMetadata;
 }
 
 export interface SupertrendSignal {
@@ -41,6 +79,19 @@ export interface SupertrendSignal {
   confidence: number;
   confidenceTier: ConfidenceTier;
   confidenceBreakdown?: ConfidenceFactorBreakdown;
+  ama?: number;
+  perfIdx?: number;
+  bull?: number;
+  neutral?: number;
+  bear?: number;
+  strongBull?: boolean;
+  strongBear?: boolean;
+  tradeBias?: "LONG BIAS" | "SHORT BIAS" | "WAIT";
+  tradeState?: "STRONG BULL" | "STRONG BEAR" | "BULL" | "BEAR" | "NEUTRAL";
+  oscSpread?: number;
+  priceToStopAtr?: number;
+  clusterMetadata?: ClusterMetadata;
+  agentPayload?: Record<string, unknown>;
 }
 
 export interface BacktestTrade {
@@ -81,6 +132,11 @@ export interface BacktestOptions {
   useChopFilter?: boolean; // Filter: Avoid choppy sideways compression (CHOP > 61.8)
   maxChopThreshold?: number; // default: 61.8
   takeProfitR?: number; // e.g. 2.0 = 2R TP
+  step?: number;
+  perfAlpha?: number;
+  fromCluster?: "Best" | "Average" | "Worst";
+  oscSmooth?: number;
+  useOscillatorFilter?: boolean; // Filter: require tradeBias confirmation
 }
 
 export interface BacktestSummary {
@@ -123,12 +179,42 @@ export interface TimeframePerformanceCard {
   tradesCount: number;
 }
 
+interface EnsembleMember {
+  factor: number;
+  upper: number;
+  lower: number;
+  output: number;
+  perf: number;
+  trend: number;
+}
+
+interface BarContext {
+  time: number;
+  close: number;
+  prevClose: number;
+  hl2: number;
+  atr: number;
+}
+
 export class AdaptiveSupertrend {
-  private bullSamples: number[] = [];
-  private bearSamples: number[] = [];
-  private trend: TrendDirection = "NEUTRAL";
+  private step: number;
+  private perfAlpha: number;
+  private fromCluster: "Best" | "Average" | "Worst";
+  private oscSmooth: number;
+  private maxIter: number;
+  private ensemble: EnsembleMember[] = [];
   private upBand: number = 0;
   private dnBand: number = 0;
+  private targetFactor: number = 3.0;
+  private perfIdx: number = 0;
+  private perfAma: number = 0;
+  private denEma: number = 0;
+  private trend: TrendDirection = "NEUTRAL";
+  private bull: number = 0;
+  private neutral: number = 0;
+  private bear: number = 0;
+  private bullSamples: number[] = [];
+  private bearSamples: number[] = [];
 
   constructor(
     private atrLen: number = 10,
@@ -137,185 +223,365 @@ export class AdaptiveSupertrend {
     private maxSamples: number = 150,
     private minSamples: number = 25,
     private minMult: number = 1.0,
-    private maxMult: number = 6.0
-  ) {}
+    private maxMult: number = 6.0,
+    options?: ClusteringOptions
+  ) {
+    this.step = options?.step ?? 0.5;
+    this.perfAlpha = options?.perfAlpha ?? 10.0;
+    this.fromCluster = options?.fromCluster ?? "Best";
+    this.oscSmooth = options?.oscSmooth ?? 1.0;
+    this.maxIter = options?.maxIter ?? 25;
+    this.initEnsemble();
+  }
+
+  private initEnsemble(): void {
+    this.ensemble = [];
+    const step = Math.max(0.1, this.step);
+    const low = Math.min(this.minMult, this.maxMult);
+    const high = Math.max(this.minMult, this.maxMult);
+    const count = Math.min(50, Math.floor((high - low) / step + 1e-7));
+    for (let i = 0; i <= count; i++) {
+      const factor = Number((low + i * step).toFixed(4));
+      this.ensemble.push({ factor, upper: 0, lower: 0, output: 0, perf: 0, trend: 0 });
+    }
+  }
 
   public reset(): void {
+    this.initEnsemble();
     this.bullSamples = [];
     this.bearSamples = [];
     this.trend = "NEUTRAL";
     this.upBand = 0;
     this.dnBand = 0;
+    this.targetFactor = this.fallbackMult;
+    this.perfIdx = 0;
+    this.perfAma = 0;
+    this.denEma = 0;
+    this.bull = 0;
+    this.neutral = 0;
+    this.bear = 0;
   }
 
-  /**
-   * Evaluates the latest candle against historical samples and returns a live signal with AI Confidence.
-   */
+  private updateMember(m: EnsembleMember, ctx: BarContext): void {
+    const up = ctx.hl2 + ctx.atr * m.factor;
+    const dn = ctx.hl2 - ctx.atr * m.factor;
+    // Latch breakout condition against previous bands
+    m.trend = ctx.close > m.upper ? 1 : ctx.close < m.lower ? 0 : m.trend;
+    m.upper = ctx.prevClose < m.upper ? Math.min(up, m.upper) : up;
+    m.lower = ctx.prevClose > m.lower ? Math.max(dn, m.lower) : dn;
+    // Exponential performance accumulator driven by directional price movement
+    const diff = Math.sign(ctx.prevClose - m.output) || 0;
+    const alpha = 2.0 / (this.perfAlpha + 1.0);
+    m.perf += alpha * ((ctx.close - ctx.prevClose) * diff - m.perf);
+    m.output = m.trend === 1 ? m.lower : m.upper;
+  }
+
+  private nearestCentroidIdx(val: number, centroids: number[]): number {
+    let minD = Infinity;
+    let best = 0;
+    for (let i = 0; i < centroids.length; i++) {
+      const d = Math.abs(val - centroids[i]);
+      if (d < minD) {
+        minD = d;
+        best = i;
+      }
+    }
+    return best;
+  }
+
+  private calcDispersion(values: number[], centroid: number): number {
+    if (values.length === 0) return 0;
+    const sum = values.reduce((acc, v) => acc + Math.abs(v - centroid), 0);
+    return sum / values.length;
+  }
+
+  private runKMeans1D(values: number[]): number[] {
+    if (values.length === 0) return [0, 0, 0];
+    let cents = [this.percentile(values, 25), this.percentile(values, 50), this.percentile(values, 75)];
+    // Perturb identical centroids to prevent degenerate zero-variance clustering
+    if (cents[0] === cents[2]) {
+      cents = [cents[0] - 1e-4, cents[1], cents[2] + 1e-4];
+    }
+    return this.iterateKMeans(values, cents);
+  }
+
+  private iterateKMeans(values: number[], centroids: number[]): number[] {
+    let cur = [...centroids];
+    for (let iter = 0; iter < this.maxIter; iter++) {
+      const clusters: number[][] = [[], [], []];
+      for (const v of values) {
+        clusters[this.nearestCentroidIdx(v, cur)].push(v);
+      }
+      const next = clusters.map((c, i) => (c.length > 0 ? c.reduce((a, b) => a + b, 0) / c.length : cur[i]));
+      const converged = next.every((val, i) => Math.abs(val - cur[i]) < 1e-8);
+      cur = next;
+      if (converged) break;
+    }
+    return cur.sort((a, b) => a - b);
+  }
+
+  private clusterPerformance(): { factor: number; meta: Partial<ClusterMetadata> } {
+    const perfData = this.ensemble.map((m) => m.perf);
+    const cents = this.runKMeans1D(perfData);
+    const clusters: { perfs: number[]; factors: number[] }[] = [
+      { perfs: [], factors: [] },
+      { perfs: [], factors: [] },
+      { perfs: [], factors: [] },
+    ];
+    this.ensemble.forEach((m) => {
+      const idx = this.nearestCentroidIdx(m.perf, cents);
+      clusters[idx].perfs.push(m.perf);
+      clusters[idx].factors.push(m.factor);
+    });
+    const targetIdx = this.fromCluster === "Best" ? 2 : this.fromCluster === "Average" ? 1 : 0;
+    const tfList = clusters[targetIdx].factors;
+    // Warm-up bars (all-zero perf) put every member in the middle cluster, leaving the
+    // selected cluster empty — fall back to the configured multiplier, not the arbitrary
+    // first/minimum ensemble factor, so presets with different fallbackMult actually differ.
+    const factorAvg = tfList.length > 0 ? tfList.reduce((a, b) => a + b, 0) / tfList.length : this.fallbackMult;
+    const bestDisp = this.calcDispersion(clusters[2].perfs, cents[2]);
+    return {
+      factor: Math.max(this.minMult, Math.min(this.maxMult, factorAvg)),
+      meta: {
+        perfWorstCentroid: cents[0],
+        perfAverageCentroid: cents[1],
+        perfBestCentroid: cents[2],
+        perfWorstDispersion: this.calcDispersion(clusters[0].perfs, cents[0]),
+        perfAverageDispersion: this.calcDispersion(clusters[1].perfs, cents[1]),
+        perfBestDispersion: bestDisp,
+        bestClusterStability: bestDisp / Math.max(Math.abs(cents[2]), 1e-10),
+      },
+    };
+  }
+
+  private clusterOscillator(close: number): Partial<ClusterMetadata> {
+    const distData = this.ensemble.map((m) => close - m.output);
+    const cents = this.runKMeans1D(distData);
+    const clusters: number[][] = [[], [], []];
+    distData.forEach((d) => clusters[this.nearestCentroidIdx(d, cents)].push(d));
+    const oscAlpha = 2.0 / (this.oscSmooth + 1.0);
+    this.bear += oscAlpha * (cents[0] - this.bear);
+    this.neutral += oscAlpha * (cents[1] - this.neutral);
+    this.bull += oscAlpha * (cents[2] - this.bull);
+    const bullDisp = this.calcDispersion(clusters[2], cents[2]);
+    return {
+      stateBearCentroid: cents[0],
+      stateNeutralCentroid: cents[1],
+      stateBullCentroid: cents[2],
+      stateBearDispersion: this.calcDispersion(clusters[0], cents[0]),
+      stateNeutralDispersion: this.calcDispersion(clusters[1], cents[1]),
+      stateBullDispersion: bullDisp,
+      bullClusterStability: bullDisp / Math.max(Math.abs(cents[2]), 1e-10),
+    };
+  }
+
+  private updateAdaptiveBands(ctx: BarContext, targetFactor: number, perfBestCentroid: number): number {
+    const upAdaptive = ctx.hl2 + ctx.atr * targetFactor;
+    const dnAdaptive = ctx.hl2 - ctx.atr * targetFactor;
+    this.dnBand = ctx.prevClose < this.dnBand ? Math.min(upAdaptive, this.dnBand) : upAdaptive;
+    this.upBand = ctx.prevClose > this.upBand ? Math.max(dnAdaptive, this.upBand) : dnAdaptive;
+    const prevTrend = this.trend;
+    this.trend = ctx.close > this.dnBand ? "UP" : ctx.close < this.upBand ? "DOWN" : prevTrend;
+    const ts = this.trend === "UP" ? this.upBand : this.dnBand;
+    // Volatility denominator scales the dynamic smoothing speed of the AMA
+    const denLen = Math.max(2, Math.round(this.perfAlpha));
+    const denAlpha = 2.0 / (denLen + 1.0);
+    this.denEma += denAlpha * (Math.abs(ctx.close - ctx.prevClose) - this.denEma);
+    this.perfIdx = this.denEma > 0 ? Math.max(perfBestCentroid || 0, 0) / this.denEma : 0;
+    this.perfAma = this.perfAma === 0 ? ts : this.perfAma + this.perfIdx * (ts - this.perfAma);
+    return ts;
+  }
+
+  private processBar(ctx: BarContext, isFirst: boolean): SupertrendPoint {
+    if (isFirst) {
+      this.ensemble.forEach((m) => {
+        m.upper = ctx.hl2 + ctx.atr * m.factor;
+        m.lower = ctx.hl2 - ctx.atr * m.factor;
+        m.output = m.upper;
+      });
+      this.upBand = ctx.hl2 - ctx.atr * this.fallbackMult;
+      this.dnBand = ctx.hl2 + ctx.atr * this.fallbackMult;
+      this.perfAma = ctx.close;
+    } else {
+      this.ensemble.forEach((m) => this.updateMember(m, ctx));
+    }
+    const prevTrend = this.trend;
+    const perfCluster = this.clusterPerformance();
+    this.targetFactor = perfCluster.factor;
+    const ts = this.updateAdaptiveBands(ctx, perfCluster.factor, perfCluster.meta.perfBestCentroid ?? 0);
+    const oscMeta = this.clusterOscillator(ctx.close);
+    const meta: ClusterMetadata = { ...perfCluster.meta, ...oscMeta } as ClusterMetadata;
+    const sigType: SignalType | null =
+      this.trend === "UP" && prevTrend === "DOWN" ? "BUY" : this.trend === "DOWN" && prevTrend === "UP" ? "SELL" : null;
+    return this.buildPoint(ctx, ts, sigType, meta);
+  }
+
+  private buildPoint(ctx: BarContext, ts: number, sigType: SignalType | null, meta: ClusterMetadata): SupertrendPoint {
+    const strongBull = this.bull > 0 && this.neutral > 0 && this.bear > 0;
+    const strongBear = this.bull < 0 && this.neutral < 0 && this.bear < 0;
+    const bullishState = this.bull > 0 && this.neutral >= 0;
+    const bearishState = this.bear < 0 && this.neutral <= 0;
+    const tradeBias = this.trend === "UP" && bullishState ? "LONG BIAS" : this.trend === "DOWN" && bearishState ? "SHORT BIAS" : "WAIT";
+    const tradeState = strongBull ? "STRONG BULL" : strongBear ? "STRONG BEAR" : bullishState ? "BULL" : bearishState ? "BEAR" : "NEUTRAL";
+    return {
+      time: ctx.time,
+      trend: this.trend,
+      supertrend: ts,
+      upBand: this.upBand,
+      dnBand: this.dnBand,
+      atr: ctx.atr,
+      adaptiveMult: this.targetFactor,
+      signal: sigType,
+      confidence: 70,
+      confidenceTier: "HIGH",
+      ama: this.perfAma,
+      perfIdx: this.perfIdx,
+      targetFactor: this.targetFactor,
+      bull: this.bull,
+      neutral: this.neutral,
+      bear: this.bear,
+      strongBull,
+      strongBear,
+      tradeBias,
+      tradeState,
+      oscSpread: this.bull - this.bear,
+      priceToStopAtr: ctx.atr > 0 ? (ctx.close - ts) / ctx.atr : 0,
+      clusterMetadata: meta,
+    };
+  }
+
+  public computeFullSeries(candles: Candle[]): SupertrendPoint[] {
+    this.reset();
+    if (candles.length === 0) return [];
+    const points: SupertrendPoint[] = [];
+    let prevAtr = 0;
+    for (let i = 0; i < candles.length; i++) {
+      const c = candles[i];
+      const prevClose = i > 0 ? candles[i - 1].close : c.close;
+      const tr = i === 0 ? c.high - c.low : Math.max(c.high - c.low, Math.abs(c.high - prevClose), Math.abs(c.low - prevClose));
+      const atr = i === 0 ? tr : i < this.atrLen ? (prevAtr * i + tr) / (i + 1) : (prevAtr * (this.atrLen - 1) + tr) / this.atrLen;
+      prevAtr = atr;
+      const ctx: BarContext = { time: c.time, close: c.close, prevClose, hl2: (c.high + c.low) / 2, atr };
+      const pt = this.processBar(ctx, i === 0);
+      this.recordPullback(candles.slice(Math.max(0, i - 3), i + 1), atr);
+      const conf = this.computeConfidence(pt.trend === "UP" ? "BUY" : "SELL", candles.slice(0, i + 1), atr, this.trend === "UP" ? this.bullSamples : this.bearSamples);
+      pt.confidence = conf.totalScore;
+      pt.confidenceTier = conf.tier;
+      points.push(pt);
+    }
+    return points;
+  }
+
+  public warmUpFromHistory(candles: Candle[]): void {
+    if (candles.length < 2) return;
+    this.computeFullSeries(candles.slice(0, -1));
+  }
+
+  private fallbackSignal(price: number, time: number): SupertrendSignal {
+    return {
+      type: "HOLD",
+      price,
+      stop: price,
+      trend: "NEUTRAL",
+      adaptiveMult: this.fallbackMult,
+      atr: 0,
+      time,
+      confidence: 50,
+      confidenceTier: "MEDIUM",
+    };
+  }
+
   public update(
     candles: Candle[],
     contextOptions?: { orderBookRatio?: number; fundingRate?: number; sentimentScore?: number }
   ): SupertrendSignal {
     if (candles.length < 2) {
       const p = candles[0]?.close || 0;
-      return {
-        type: "HOLD",
-        price: p,
-        stop: p,
-        trend: "NEUTRAL",
-        adaptiveMult: this.fallbackMult,
-        atr: 0,
-        time: candles[0]?.time || 0,
-        confidence: 50,
-        confidenceTier: "MEDIUM",
-      };
+      return this.fallbackSignal(p, candles[0]?.time || 0);
     }
+    const series = this.computeFullSeries(candles);
+    const last = series[series.length - 1];
+    const prev = series[series.length - 2];
+    const conf = this.computeConfidence(last.trend === "UP" ? "BUY" : "SELL", candles, last.atr, last.trend === "UP" ? this.bullSamples : this.bearSamples, contextOptions);
+    const type: SignalType = last.trend === "UP" && prev.trend === "DOWN" ? "BUY" : last.trend === "DOWN" && prev.trend === "UP" ? "SELL" : "HOLD";
+    const sig: SupertrendSignal = {
+      type,
+      price: candles[candles.length - 1].close,
+      stop: last.supertrend,
+      trend: last.trend,
+      adaptiveMult: last.adaptiveMult,
+      atr: last.atr,
+      time: last.time,
+      confidence: conf.totalScore,
+      confidenceTier: conf.tier,
+      confidenceBreakdown: conf,
+      ama: last.ama,
+      perfIdx: last.perfIdx,
+      bull: last.bull,
+      neutral: last.neutral,
+      bear: last.bear,
+      strongBull: last.strongBull,
+      strongBear: last.strongBear,
+      tradeBias: last.tradeBias,
+      tradeState: last.tradeState,
+      oscSpread: last.oscSpread,
+      priceToStopAtr: last.priceToStopAtr,
+      clusterMetadata: last.clusterMetadata,
+    };
+    sig.agentPayload = this.getAgentPayload("ACTIVE", "LIVE", sig);
+    return sig;
+  }
 
-    const currentCandle = candles[candles.length - 1];
-    const prevCandle = candles[candles.length - 2];
-    const atr = this.calculateATR(candles, this.atrLen);
-    const src = (currentCandle.high + currentCandle.low) / 2;
-
-    // 1. Calculate Adaptive Multipliers via percentile of past pullbacks
-    const bullMult = this.getAdaptiveMult(this.bullSamples);
-    const bearMult = this.getAdaptiveMult(this.bearSamples);
-    const activeMult = this.trend === "UP" ? bullMult : bearMult;
-
-    const rawUp = src - bullMult * atr;
-    const rawDn = src + bearMult * atr;
-
-    // 2. Latch the dynamic bands
-    this.upBand = prevCandle.close > this.upBand ? Math.max(rawUp, this.upBand) : rawUp;
-    this.dnBand = prevCandle.close < this.dnBand ? Math.min(rawDn, this.dnBand) : rawDn;
-
-    // 3. Determine Trend State
-    const prevTrend = this.trend;
-    if (prevTrend === "DOWN" || prevTrend === "NEUTRAL") {
-      if (currentCandle.close > this.dnBand) this.trend = "UP";
-    }
-    if (prevTrend === "UP" || prevTrend === "NEUTRAL") {
-      if (currentCandle.close < this.upBand) this.trend = "DOWN";
-    }
-
-    // 4. Record Pullback Depths on confirmed bar evolution
-    this.recordPullback(candles, atr);
-
-    const activeStop = this.trend === "UP" ? this.upBand : this.dnBand;
-
-    // 5. Calculate AI Multi-Factor Confidence Breakdown
-    const activeSamples = this.trend === "UP" ? this.bullSamples : this.bearSamples;
-    const confidenceBreakdown = this.computeConfidence(
-      this.trend === "UP" ? "BUY" : "SELL",
-      candles,
-      atr,
-      activeSamples,
-      contextOptions
-    );
-
-    // 6. Emit Signal on Flip
-    if (this.trend === "UP" && prevTrend === "DOWN") {
-      return {
-        type: "BUY",
-        price: currentCandle.close,
-        stop: this.upBand,
-        trend: "UP",
-        adaptiveMult: bullMult,
-        atr,
-        time: currentCandle.time,
-        confidence: confidenceBreakdown.totalScore,
-        confidenceTier: confidenceBreakdown.tier,
-        confidenceBreakdown,
-      };
-    }
-    if (this.trend === "DOWN" && prevTrend === "UP") {
-      return {
-        type: "SELL",
-        price: currentCandle.close,
-        stop: this.dnBand,
-        trend: "DOWN",
-        adaptiveMult: bearMult,
-        atr,
-        time: currentCandle.time,
-        confidence: confidenceBreakdown.totalScore,
-        confidenceTier: confidenceBreakdown.tier,
-        confidenceBreakdown,
-      };
-    }
-
+  public getAgentPayload(symbol: string, timeframe: string, sig: SupertrendSignal): Record<string, unknown> {
+    const meta = sig.clusterMetadata;
     return {
-      type: "HOLD",
-      price: currentCandle.close,
-      stop: activeStop,
-      trend: this.trend,
-      adaptiveMult: activeMult,
-      atr,
-      time: currentCandle.time,
-      confidence: confidenceBreakdown.totalScore,
-      confidenceTier: confidenceBreakdown.tier,
-      confidenceBreakdown,
+      schema: "supertrend-ai-suite.v1",
+      symbol,
+      timeframe,
+      time: sig.time,
+      close: sig.price,
+      target_factor: sig.adaptiveMult,
+      perf_idx: sig.perfIdx ?? 0,
+      ts: sig.stop,
+      ama: sig.ama ?? sig.stop,
+      os: sig.trend === "UP" ? 1 : 0,
+      bull: sig.bull ?? 0,
+      neutral: sig.neutral ?? 0,
+      bear: sig.bear ?? 0,
+      state: sig.tradeState?.toLowerCase().replace(/ /g, "_") ?? "neutral",
+      price_to_stop_atr: sig.priceToStopAtr ?? 0,
+      oscillator_spread: sig.oscSpread ?? 0,
+      best_cluster_stability: meta?.bestClusterStability ?? 0,
+      bull_cluster_stability: meta?.bullClusterStability ?? 0,
+      perf_clusters: {
+        best: { centroid: meta?.perfBestCentroid ?? 0, dispersion: meta?.perfBestDispersion ?? 0 },
+        average: { centroid: meta?.perfAverageCentroid ?? 0, dispersion: meta?.perfAverageDispersion ?? 0 },
+        worst: { centroid: meta?.perfWorstCentroid ?? 0, dispersion: meta?.perfWorstDispersion ?? 0 },
+      },
+      state_clusters: {
+        bull: { centroid: meta?.stateBullCentroid ?? 0, dispersion: meta?.stateBullDispersion ?? 0 },
+        neutral: { centroid: meta?.stateNeutralCentroid ?? 0, dispersion: meta?.stateNeutralDispersion ?? 0 },
+        bear: { centroid: meta?.stateBearCentroid ?? 0, dispersion: meta?.stateBearDispersion ?? 0 },
+      },
     };
   }
 
-  /**
-   * Pre-seeds the pullback sample buffers and trend/band state from candle history so
-   * a freshly created engine reports the same confidence scale as the backtest.
-   * Replays the state machine over history WITHOUT emitting signals (last bar excluded).
-   */
-  public warmUpFromHistory(candles: Candle[]): void {
-    for (let i = 1; i < candles.length - 1; i++) {
-      this.update(candles.slice(0, i + 1));
-    }
+  private calcOrderFlowScore(signalType: "BUY" | "SELL", obRatio: number): number {
+    if (signalType === "BUY") return obRatio > 1.3 ? 95 : obRatio < 0.7 ? 25 : 65;
+    return obRatio < 0.7 ? 95 : obRatio > 1.3 ? 25 : 65;
   }
 
-  /**
-   * Generates a complete series of Supertrend points across an entire candle array for chart rendering.
-   */
-  public computeFullSeries(candles: Candle[]): SupertrendPoint[] {
-    this.reset();
-    const result: SupertrendPoint[] = [];
-    if (candles.length === 0) return result;
-
-    for (let i = 0; i < candles.length; i++) {
-      const slice = candles.slice(0, i + 1);
-      const current = candles[i];
-
-      if (slice.length < Math.max(this.atrLen, 3)) {
-        result.push({
-          time: current.time,
-          trend: "NEUTRAL",
-          supertrend: current.close,
-          upBand: current.close,
-          dnBand: current.close,
-          atr: 0,
-          adaptiveMult: this.fallbackMult,
-          signal: null,
-          confidence: 50,
-          confidenceTier: "MEDIUM",
-        });
-        continue;
-      }
-
-      const sig = this.update(slice);
-      result.push({
-        time: current.time,
-        trend: sig.trend,
-        supertrend: sig.stop,
-        upBand: this.upBand,
-        dnBand: this.dnBand,
-        atr: sig.atr,
-        adaptiveMult: sig.adaptiveMult,
-        signal: sig.type === "HOLD" ? null : sig.type,
-        confidence: sig.confidence,
-        confidenceTier: sig.confidenceTier,
-      });
+  private calcSentimentScore(signalType: "BUY" | "SELL", sentiment: number, funding: number): number {
+    if (signalType === "BUY") {
+      const s = sentiment > 0 ? 80 + sentiment * 20 : 60 + sentiment * 40;
+      const f = funding < -0.02 ? 90 : funding > 0.04 ? 30 : 65;
+      return Math.round((s + f) / 2);
     }
-
-    return result;
+    const s = sentiment < 0 ? 80 + Math.abs(sentiment) * 20 : 60 - sentiment * 40;
+    const f = funding > 0.02 ? 90 : funding < -0.04 ? 30 : 65;
+    return Math.round((s + f) / 2);
   }
 
-  /**
-   * Multi-factor AI confidence calculation fusing statistical sampling, MTF alignment,
-   * volume expansion, order flow imbalance, and sentiment confluence.
-   */
   public computeConfidence(
     signalType: "BUY" | "SELL",
     candles: Candle[],
@@ -327,101 +593,46 @@ export class AdaptiveSupertrend {
       sentimentScore?: number;
     }
   ): ConfidenceFactorBreakdown {
-    // 1. Statistical Sampling Density (25%)
     const sampleRatio = Math.min(1.0, samples.length / Math.max(1, this.minSamples));
     const statisticalSampling = Math.round(sampleRatio * 85 + (samples.length > 50 ? 15 : 0));
-
-    // 2. Volume Expansion / RVOL (20%)
     let volumeExpansion = 50;
     if (candles.length >= 20) {
-      const recentCandles = candles.slice(-20);
-      const avgVol = recentCandles.reduce((a, b) => a + (b.volume || 0), 0) / 20;
+      const recent = candles.slice(-20);
+      const avgVol = recent.reduce((a, b) => a + (b.volume || 0), 0) / 20;
       const currVol = candles[candles.length - 1]?.volume || 0;
-      const rvol = avgVol > 0 ? currVol / avgVol : 1.0;
-      volumeExpansion = Math.min(100, Math.round(rvol * 55));
+      volumeExpansion = Math.min(100, Math.round((avgVol > 0 ? currVol / avgVol : 1.0) * 55));
     }
-
-    // 3. Multi-Timeframe Trend Alignment (20%)
     let mtfAlignment = 50;
     if (candles.length >= 50) {
       const closes = candles.map((c) => c.close);
       const sma50 = closes.slice(-50).reduce((a, b) => a + b, 0) / 50;
       const sma20 = closes.slice(-20).reduce((a, b) => a + b, 0) / 20;
-      const isMtfBull = sma20 > sma50;
-      if (signalType === "BUY") {
-        mtfAlignment = isMtfBull ? 90 : 35;
-      } else {
-        mtfAlignment = !isMtfBull ? 90 : 35;
-      }
+      mtfAlignment = (sma20 > sma50) === (signalType === "BUY") ? 90 : 35;
     }
-
-    // 4. Order Flow / Wall Imbalance (20%)
-    let orderFlowImbalance = 60;
-    const obRatio = options?.orderBookRatio ?? 1.0;
-    if (signalType === "BUY") {
-      if (obRatio > 1.3) orderFlowImbalance = 95;
-      else if (obRatio < 0.7) orderFlowImbalance = 25;
-      else orderFlowImbalance = 65;
-    } else {
-      if (obRatio < 0.7) orderFlowImbalance = 95;
-      else if (obRatio > 1.3) orderFlowImbalance = 25;
-      else orderFlowImbalance = 65;
-    }
-
-    // 5. Sentiment / Funding Rate Confluence (15%)
-    let llmSentiment = 60;
-    const sentiment = options?.sentimentScore ?? 0;
-    const funding = options?.fundingRate ?? 0;
-    if (signalType === "BUY") {
-      const sentScore = sentiment > 0 ? 80 + sentiment * 20 : 60 + sentiment * 40;
-      const fundScore = funding < -0.02 ? 90 : funding > 0.04 ? 30 : 65;
-      llmSentiment = Math.round((sentScore + fundScore) / 2);
-    } else {
-      const sentScore = sentiment < 0 ? 80 + Math.abs(sentiment) * 20 : 60 - sentiment * 40;
-      const fundScore = funding > 0.02 ? 90 : funding < -0.04 ? 30 : 65;
-      llmSentiment = Math.round((sentScore + fundScore) / 2);
-    }
-
-    // Weighted Total Score (0 - 100)
-    const totalScore = Math.min(
-      99,
-      Math.max(
-        15,
-        Math.round(
-          statisticalSampling * 0.25 +
-          volumeExpansion * 0.20 +
-          mtfAlignment * 0.20 +
-          orderFlowImbalance * 0.20 +
-          llmSentiment * 0.15
-        )
-      )
+    const orderFlowImbalance = this.calcOrderFlowScore(signalType, options?.orderBookRatio ?? 1.0);
+    const llmSentiment = this.calcSentimentScore(signalType, options?.sentimentScore ?? 0, options?.fundingRate ?? 0);
+    const oscBonus =
+      (signalType === "BUY" && this.bull > 0 && this.neutral >= 0) ||
+      (signalType === "SELL" && this.bear < 0 && this.neutral <= 0)
+        ? 6
+        : -6;
+    const baseScore = Math.round(
+      statisticalSampling * 0.25 +
+        volumeExpansion * 0.2 +
+        mtfAlignment * 0.2 +
+        orderFlowImbalance * 0.2 +
+        llmSentiment * 0.15
     );
-
-    let tier: ConfidenceTier = "LOW";
-    if (totalScore >= 88) tier = "PRIME";
-    else if (totalScore >= 75) tier = "HIGH";
-    else if (totalScore >= 55) tier = "MEDIUM";
-
-    return {
-      statisticalSampling,
-      mtfAlignment,
-      orderFlowImbalance,
-      volumeExpansion,
-      llmSentiment,
-      totalScore,
-      tier,
-    };
+    const totalScore = Math.min(99, Math.max(15, baseScore + oscBonus));
+    const tier: ConfidenceTier = totalScore >= 88 ? "PRIME" : totalScore >= 75 ? "HIGH" : totalScore >= 55 ? "MEDIUM" : "LOW";
+    return { statisticalSampling, mtfAlignment, orderFlowImbalance, volumeExpansion, llmSentiment, totalScore, tier };
   }
 
-  /**
-   * Calculates true Average True Range (Wilder's smoothing).
-   */
   public calculateATR(candles: Candle[], length: number): number {
     if (candles.length < 2) return 0;
     const count = Math.min(candles.length, length * 2);
     const startIdx = candles.length - count;
     let trSum = 0;
-
     for (let i = startIdx + 1; i < candles.length; i++) {
       const curr = candles[i];
       const prev = candles[i - 1];
@@ -430,22 +641,9 @@ export class AdaptiveSupertrend {
       const lc = Math.abs(curr.low - prev.close);
       trSum += Math.max(hl, hc, lc);
     }
-
     return trSum / (count - 1 || 1);
   }
 
-  /**
-   * Calculates dynamic multiplier based on percentile rank of recorded pullbacks.
-   */
-  private getAdaptiveMult(samples: number[]): number {
-    if (samples.length < this.minSamples) return this.fallbackMult;
-    const p = this.percentile(samples, this.percentileRank);
-    return Math.max(this.minMult, Math.min(this.maxMult, p));
-  }
-
-  /**
-   * Computes the k-th percentile of an array.
-   */
   public percentile(arr: number[], p: number): number {
     if (arr.length === 0) return this.fallbackMult;
     const sorted = [...arr].sort((a, b) => a - b);
@@ -457,16 +655,11 @@ export class AdaptiveSupertrend {
     return sorted[lower] * (1 - weight) + sorted[upper] * weight;
   }
 
-  /**
-   * Measures pullbacks relative to ATR on candle swings and feeds them into AI sample buffers.
-   */
   private recordPullback(candles: Candle[], atr: number): void {
     if (candles.length < 4 || atr <= 0) return;
     const c0 = candles[candles.length - 1];
     const c1 = candles[candles.length - 2];
     const c2 = candles[candles.length - 3];
-
-    // Bullish pullback sample: swing low during uptrend
     if (this.trend === "UP" && c1.low < c2.low && c0.close > c1.high) {
       const pullbackDist = (c0.high - c1.low) / atr;
       if (pullbackDist > 0.5 && pullbackDist < 10) {
@@ -474,8 +667,6 @@ export class AdaptiveSupertrend {
         if (this.bullSamples.length > this.maxSamples) this.bullSamples.shift();
       }
     }
-
-    // Bearish pullback sample: swing high during downtrend
     if (this.trend === "DOWN" && c1.high > c2.high && c0.close < c1.low) {
       const pullbackDist = (c1.high - c0.low) / atr;
       if (pullbackDist > 0.5 && pullbackDist < 10) {
@@ -640,6 +831,12 @@ export class AdaptiveSupertrend {
           if (chopIndex > (options.maxChopThreshold || 61.8)) {
             continue; // Skip choppy whip-saw entry!
           }
+        }
+
+        // Enforce Clustering Oscillator Bias Filter (reject flips into strong counter-regimes)
+        if (options.useOscillatorFilter) {
+          if (pt.signal === "BUY" && pt.strongBear) continue;
+          if (pt.signal === "SELL" && pt.strongBull) continue;
         }
 
         const riskAmount = equity * riskPctPerTrade;

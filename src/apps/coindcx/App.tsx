@@ -41,7 +41,7 @@ interface SessionInfo {
 }
 
 export function App() {
-  const VALID_TABS = ["terminal", "portfolio"] as const;
+  const VALID_TABS = ["terminal", "confluence_backtest", "portfolio"] as const;
   const [activeTab, setActiveTab] = useState<"terminal" | "confluence_backtest" | "portfolio">(() => {
     const saved = localStorage.getItem("coindcx_activeTab");
     return (VALID_TABS.includes(saved as any) ? saved : "terminal") as any;
@@ -483,9 +483,9 @@ export function App() {
                         style={{
                           padding: "4px 8px",
                           fontSize: "11px",
-                          fontWeight: 600,
+                          fontWeight: 700,
                           borderRadius: "4px",
-                          background: selectedInterval === item.key ? "var(--accent-cyan)" : "rgba(255,255,255,0.05)",
+                          background: selectedInterval === item.key ? "var(--accent-cyan)" : "rgba(255,255,255,0.06)",
                           color: selectedInterval === item.key ? "#0A0D14" : "var(--text-secondary)",
                           border: "none",
                           cursor: "pointer",
@@ -497,7 +497,7 @@ export function App() {
                   </div>
                 </div>
 
-                <div style={{ flex: 1, minHeight: "520px" }}>
+                <div style={{ flex: 1, minHeight: "450px" }}>
                   <TradingViewChart
                     adapter={adapterInstance}
                     symbol={selectedSymbol}
@@ -510,8 +510,11 @@ export function App() {
                 </div>
               </div>
 
+              {/* Right Order Book / Depth 20 */}
               {showDepthPanel && (
-                <MarketDepthStream bids={tick?.bids || []} asks={tick?.asks || []} symbol={selectedSymbol} />
+                <div style={{ height: "100%", overflow: "hidden" }}>
+                  <MarketDepthStream bids={tick?.bids || []} asks={tick?.asks || []} symbol={selectedSymbol} />
+                </div>
               )}
             </div>
           )}

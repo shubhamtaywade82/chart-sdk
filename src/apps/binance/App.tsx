@@ -17,9 +17,11 @@ import {
   Wallet,
   Zap,
   Brain,
+  Grid3x3,
 } from "lucide-react";
 import { TradingViewChart, formatPriceDynamic, getPricePrecision } from "../../components/TradingViewChart";
 import { MarketDepthStream } from "../../components/MarketDepthStream";
+import { Market2DView } from "../../components/Market2DView";
 import { FuturesBacktestWorkbench } from "../../components/research/FuturesBacktestWorkbench";
 import { ConfluenceBacktestWorkbench } from "../../components/research/ConfluenceBacktestWorkbench";
 import { PositioningAnalyticsView } from "../../components/research/PositioningAnalyticsView";
@@ -47,8 +49,10 @@ interface SessionInfo {
 }
 
 export function App() {
-  const VALID_TABS = ["terminal", "ai_supertrend", "backtest", "intel", "bias", "portfolio"] as const;
-  const [activeTab, setActiveTab] = useState<"terminal" | "ai_supertrend" | "backtest" | "confluence_backtest" | "intel" | "bias" | "portfolio">(() => {
+  const VALID_TABS = ["terminal", "market_2d", "ai_supertrend", "backtest", "intel", "bias", "portfolio"] as const;
+  const [activeTab, setActiveTab] = useState<"terminal" | "market_2d" | "ai_supertrend" | "backtest" | "confluence_backtest" | "intel" | "bias" | "portfolio">(() => {
+    const urlTab = new URLSearchParams(window.location.search).get("tab");
+    if (urlTab === "2d" || urlTab === "market_2d") return "market_2d";
     const saved = localStorage.getItem("binance_activeTab");
     return (VALID_TABS.includes(saved as any) ? saved : "terminal") as any;
   });
@@ -731,6 +735,7 @@ export function App() {
 
           {[
             { id: "terminal", label: "Real-Time Terminal", icon: BarChart2 },
+            { id: "market_2d", label: "DepthCube Market", icon: Grid3x3 },
             { id: "ai_supertrend", label: "AI Supertrend & Results Dashboard", icon: Brain },
             { id: "backtest", label: "Futures Backtest Workbench", icon: Activity },
             { id: "confluence_backtest", label: "SMC/ICT Confluence Backtest", icon: Zap },
@@ -845,6 +850,16 @@ export function App() {
               >
                 <MarketDepthStream bids={tick?.bids || []} asks={tick?.asks || []} symbol={selectedSymbol} />
               </div>
+            </div>
+          )}
+
+          {/* TAB: 2D MARKET DEPTHCUBE VIEW */}
+          {activeTab === "market_2d" && (
+            <div style={{ flex: 1, minHeight: "520px", minWidth: 0, width: "100%", height: "100%", overflow: "hidden" }}>
+              <Market2DView
+                symbol={selectedSymbol}
+                onSymbolChange={(sym) => setSelectedSymbol(sym.toLowerCase())}
+              />
             </div>
           )}
 
