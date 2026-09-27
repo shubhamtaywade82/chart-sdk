@@ -9,7 +9,7 @@ const RECONNECT_MAX_MS = 15000;
 const PING_INTERVAL_MS = 12000;
 const RATE_WINDOW_MS = 1000;
 
-export function useMarketEngine(symbol: string) {
+export function useMarketEngine(symbol: string, interval: string = "1m") {
   const [state, dispatch] = useReducer(
     (s: EngineState, action: EngineMessage | { type: "__reset" }) =>
       action.type === "__reset" ? initialEngineState : applyEngineMessage(s, action as EngineMessage),
@@ -62,7 +62,7 @@ export function useMarketEngine(symbol: string) {
         reconnectAttemptsRef.current = 0;
         setWsStatus("live");
         try {
-          ws.send(JSON.stringify({ type: "subscribe", symbol }));
+          ws.send(JSON.stringify({ type: "subscribe", symbol, interval }));
         } catch {}
       };
       ws.onmessage = (e) => {
@@ -85,7 +85,7 @@ export function useMarketEngine(symbol: string) {
       cleanupSocket(wsRef.current);
       wsRef.current = null;
     };
-  }, [symbol]);
+  }, [symbol, interval]);
 
   useEffect(() => {
     const rateTimer = setInterval(() => {

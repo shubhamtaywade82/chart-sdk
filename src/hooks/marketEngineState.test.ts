@@ -94,9 +94,16 @@ describe("applyEngineMessage", () => {
     expect(state.cvd).toBe(9);
   });
 
-  it("candle messages are ignored (hook doesn't expose candles)", () => {
+  it("candle appends a new bar", () => {
     const msg: EngineMessage = { type: "candle", symbol: "btcusdt", candle: { t: 1, o: 1, h: 1, l: 1, c: 1, v: 1, bv: 1 } };
     const state = applyEngineMessage(initialEngineState, msg);
-    expect(state).toBe(initialEngineState);
+    expect(state.candles).toEqual([msg.candle]);
+  });
+
+  it("candle replaces the last bar when its open time matches", () => {
+    const prior = { ...initialEngineState, candles: [{ t: 1, o: 1, h: 1, l: 1, c: 1, v: 1, bv: 1 }] };
+    const msg: EngineMessage = { type: "candle", symbol: "btcusdt", candle: { t: 1, o: 1, h: 2, l: 1, c: 1.5, v: 3, bv: 1 } };
+    const state = applyEngineMessage(prior, msg);
+    expect(state.candles).toEqual([msg.candle]);
   });
 });

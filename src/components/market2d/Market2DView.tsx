@@ -1,7 +1,6 @@
-import React, { useCallback, useEffect, useRef, useState } from "react";
-import { Candle3D, MarketStats, Timeframe3D, Market3DProps } from "../market3d/types";
-import { fetchKlinesFromBinance, computeMarketStats, restBinanceGet } from "../market3d/dataService";
-import { useMarketWebSocket } from "../market3d/useMarketWebSocket";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { MarketStats, Timeframe3D, Market3DProps } from "../market3d/types";
+import { computeMarketStats, restBinanceGet } from "../market3d/dataService";
 import { useMarketEngine } from "../../hooks/useMarketEngine";
 import { Market3DHeader } from "../market3d/Market3DHeader";
 import { TimeAndSalesPanel } from "../market3d/TimeAndSalesPanel";
@@ -10,6 +9,8 @@ import { CandleCanvas } from "./CandleCanvas";
 import { OrderBookLadder } from "./OrderBookLadder";
 import { DepthSnapshot, pushDepthSnapshot } from "./canvasRenderer";
 import "./market2d.css";
+
+type TickerOverride = Pick<MarketStats, "chg" | "hi" | "lo" | "vol">;
 
 export function Market2DView({
   symbol = "SOLUSDT",
@@ -20,41 +21,17 @@ export function Market2DView({
   const [currentSymbol, setCurrentSymbol] = useState(symbol);
   const [timeframe, setTimeframe] = useState<Timeframe3D>(defaultTimeframe);
   const [candleCount, setCandleCount] = useState(defaultCandleCount);
-  const [data, setData] = useState<Candle3D[]>([]);
-  const [stats, setStats] = useState<MarketStats>({ hi: 0, lo: 0, vol: 0, chg: 0, win: "24H" });
+  const [tickerOverride, setTickerOverride] = useState<TickerOverride | null>(null);
   const [showHeatmap, setShowHeatmap] = useState(true);
   const [showVolume, setShowVolume] = useState(true);
 
   const depthHistoryRef = useRef<DepthSnapshot[]>([]);
 
-  const engine = useMarketEngine(currentSymbol);
+  // Single WS connection: the server relay streams candles for the selected symbol+interval
+  // alongside book/trades/funding, so the chart no longer needs its own direct-to-Binance socket.
+  const engine = useMarketEngine(currentSymbol, timeframe);
 
-  const handleKlineStream = useCallback(
-    (k: Candle3D) => {
-      setData((prev) => {
-        if (!prev.length) return [k];
-        const last = prev[prev.length - 1];
-        if (k.t === last.t) {
-          const next = [...prev];
-          next[next.length - 1] = k;
-          return next;
-        }
-        if (k.t > last.t) {
-          const next = [...prev, k];
-          if (next.length > candleCount) next.shift();
-          return next;
-        }
-        return prev;
-      });
-    },
-    [candleCount]
-  );
-
-  useMarketWebSocket({
-    symbol: currentSymbol,
-    timeframe,
-    onKline: handleKlineStream,
-  });
+  const data = useMemo(() => engine.candles.slice(-candleCount), [engine.candles, candleCount]);
 
   useEffect(() => {
     pushDepthSnapshot(depthHistoryRef.current, engine.book.bids, engine.book.asks);
@@ -65,27 +42,25 @@ export function Market2DView({
     if (onSymbolChange) onSymbolChange(sym);
   };
 
-  const loadInitialSnapshot = useCallback(async () => {
+  const loadTickerStats = useCallback(async () => {
     depthHistoryRef.current = [];
+    setTickerOverride(null);
+    const clean = currentSymbol.replace(/[^a-zA-Z0-9]/g, "").toUpperCase();
+    const pair = clean.endsWith("USDT") ? clean : `${clean}USDT`;
     try {
-      const res = await fetchKlinesFromBinance(currentSymbol, timeframe, candleCount);
-      setData(res.data);
-      setStats(computeMarketStats(res.data));
-
-      const clean = currentSymbol.replace(/[^a-zA-Z0-9]/g, "").toUpperCase();
-      const pair = clean.endsWith("USDT") ? clean : `${clean}USDT`;
-      try {
-        const tk = await restBinanceGet<any>(`/api/v3/ticker/24hr?symbol=${pair}`);
-        setStats((prev) => ({ ...prev, chg: Number(tk.P), hi: Number(tk.h), lo: Number(tk.l), vol: Number(tk.v) }));
-      } catch {}
+      const tk = await restBinanceGet<any>(`/api/v3/ticker/24hr?symbol=${pair}`);
+      setTickerOverride({ chg: Number(tk.P), hi: Number(tk.h), lo: Number(tk.l), vol: Number(tk.v) });
     } catch {
-      // Fallback handled inside fetchKlinesFromBinance
+      // keep candle-derived stats
     }
-  }, [currentSymbol, timeframe, candleCount]);
+  }, [currentSymbol]);
 
   useEffect(() => {
-    loadInitialSnapshot();
-  }, [loadInitialSnapshot]);
+    loadTickerStats();
+  }, [loadTickerStats]);
+
+  const baseStats = useMemo(() => computeMarketStats(data), [data]);
+  const stats: MarketStats = tickerOverride ? { ...baseStats, ...tickerOverride } : baseStats;
 
   const activeCandle = data.length > 0 ? data[data.length - 1] : null;
   const timeframes: Timeframe3D[] = ["15m", "1h", "4h", "1d"];

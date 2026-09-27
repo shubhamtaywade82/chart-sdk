@@ -1,5 +1,6 @@
 import type {
   EngineMessage,
+  EngineCandle,
   EngineTrade,
   LiquidationEvent,
   OrderBookState,
@@ -9,6 +10,7 @@ import type {
 } from "../../server/binance/engine/types";
 
 export interface EngineState {
+  candles: EngineCandle[];
   book: OrderBookState;
   trades: EngineTrade[];
   cvd: number;
@@ -24,6 +26,7 @@ const TRADE_HISTORY_CAP = 200;
 const LIQUIDATION_HISTORY_CAP = 50;
 
 export const initialEngineState: EngineState = {
+  candles: [],
   book: { bids: [], asks: [], lastUpdateId: 0 },
   trades: [],
   cvd: 0,
@@ -39,6 +42,7 @@ export function applyEngineMessage(state: EngineState, msg: EngineMessage): Engi
   switch (msg.type) {
     case "snapshot":
       return {
+        candles: msg.candles,
         book: msg.book,
         trades: msg.trades,
         cvd: msg.cvd,
@@ -71,8 +75,15 @@ export function applyEngineMessage(state: EngineState, msg: EngineMessage): Engi
       };
     case "funding":
       return { ...state, funding: msg.funding };
-    case "candle":
-      return state;
+    case "candle": {
+      const last = state.candles[state.candles.length - 1];
+      if (last && last.t === msg.candle.t) {
+        const candles = state.candles.slice();
+        candles[candles.length - 1] = msg.candle;
+        return { ...state, candles };
+      }
+      return { ...state, candles: [...state.candles, msg.candle] };
+    }
     default:
       return state;
   }
