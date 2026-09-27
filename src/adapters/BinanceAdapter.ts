@@ -10,13 +10,7 @@ const safeCloseSocket = (socket: WebSocket | null) => {
   socket.onerror = null;
   socket.onclose = null;
   try {
-    if (socket.readyState === WebSocket.OPEN) {
-      socket.close();
-    } else if (socket.readyState === WebSocket.CONNECTING) {
-      socket.onopen = () => {
-        try { socket.close(); } catch {}
-      };
-    }
+    socket.close(1000, "Closed");
   } catch {}
 };
 

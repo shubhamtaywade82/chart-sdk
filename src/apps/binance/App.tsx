@@ -276,11 +276,14 @@ export function App() {
       clearInterval(sessionTimer);
       if (reconnectTimer) clearTimeout(reconnectTimer);
       if (ws) {
-        if (ws.readyState === WebSocket.OPEN) {
-          ws.close();
-        } else {
-          ws.onopen = () => ws?.close();
-        }
+        // Strip listeners to prevent aborted socket from firing reconnects or errors
+        ws.onopen = null;
+        ws.onmessage = null;
+        ws.onerror = null;
+        ws.onclose = null;
+        try {
+          ws.close(1000, "Unmounted");
+        } catch {}
       }
     };
   }, [selectedSymbol]);
