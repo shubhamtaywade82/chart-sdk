@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useCallback } from "react";
-import { Candle3D, TradeItem, DepthData, BookTicker, WsStatus, Timeframe3D, MarketStats } from "./types";
+import { Candle3D, WsStatus, Timeframe3D } from "./types";
 import { pingBinanceTime } from "./dataService";
 
 const WS_HOSTS = ["wss://data-stream.binance.vision", "wss://stream.binance.com:9443"];
@@ -8,28 +8,16 @@ interface UseMarketWebSocketParams {
   symbol: string;
   timeframe: Timeframe3D;
   onKline: (kline: Candle3D) => void;
-  onTrade: (trade: TradeItem) => void;
-  onDepth: (depth: DepthData) => void;
-  onBookTicker: (ticker: BookTicker) => void;
-  onTicker24h: (stats: Partial<MarketStats>) => void;
 }
 
-export function useMarketWebSocket({
-  symbol,
-  timeframe,
-  onKline,
-  onTrade,
-  onDepth,
-  onBookTicker,
-  onTicker24h,
-}: UseMarketWebSocketParams) {
+export function useMarketWebSocket({ symbol, timeframe, onKline }: UseMarketWebSocketParams) {
   const [wsStatus, setWsStatus] = useState<WsStatus>("connecting");
   const [msgRate, setMsgRate] = useState(0);
   const [pingMs, setPingMs] = useState<number | null>(null);
 
-  const callbacksRef = useRef({ onKline, onTrade, onDepth, onBookTicker, onTicker24h });
+  const callbacksRef = useRef({ onKline });
   useEffect(() => {
-    callbacksRef.current = { onKline, onTrade, onDepth, onBookTicker, onTicker24h };
+    callbacksRef.current = { onKline };
   });
 
   const wsRef = useRef<WebSocket | null>(null);
@@ -71,22 +59,6 @@ export function useMarketWebSocket({
         v: 100 + Math.random() * 50,
         bv: 50 + Math.random() * 25,
       });
-
-      const isSell = Math.random() < 0.5;
-      const qty = Math.random() * 40 + 0.2;
-      callbacksRef.current.onTrade({ time: Date.now(), price, qty, isSell, usd: price * qty });
-
-      const step = price * 0.00045;
-      const bids: Array<[string, string]> = [];
-      const asks: Array<[string, string]> = [];
-      for (let i = 0; i < 20; i++) {
-        bids.push([(price - step * (i + 1)).toFixed(2), (Math.random() * 220 + 8).toFixed(2)]);
-        asks.push([(price + step * (i + 1)).toFixed(2), (Math.random() * 220 + 8).toFixed(2)]);
-      }
-      callbacksRef.current.onDepth({ bids, asks });
-
-      const b = price - step * 0.6, a = price + step * 0.6, spr = a - b;
-      callbacksRef.current.onBookTicker({ bid: b, ask: a, spread: spr, spreadBps: (spr / price) * 1e4 });
     }, 750);
   }, []);
 
@@ -103,29 +75,6 @@ export function useMarketWebSocket({
         v: Number(k.v),
         bv: Number(k.V || 0),
       });
-    } else if (d.e === "aggTrade") {
-      callbacksRef.current.onTrade({
-        time: d.T,
-        price: Number(d.p),
-        qty: Number(d.q),
-        isSell: Boolean(d.m),
-        usd: Number(d.p) * Number(d.q),
-      });
-    } else if (d.e === "24hrTicker") {
-      callbacksRef.current.onTicker24h({
-        chg: Number(d.P),
-        hi: Number(d.h),
-        lo: Number(d.l),
-        vol: Number(d.v),
-      });
-    } else if (d.bids && d.asks) {
-      callbacksRef.current.onDepth({ bids: d.bids, asks: d.asks });
-    } else if (d.b !== undefined && d.a !== undefined) {
-      const b = Number(d.b), a = Number(d.a);
-      if (b > 0 && a > 0) {
-        const spread = a - b, mid = (b + a) / 2;
-        callbacksRef.current.onBookTicker({ bid: b, ask: a, spread, spreadBps: mid > 0 ? (spread / mid) * 1e4 : 0 });
-      }
     }
   };
 
@@ -154,13 +103,7 @@ export function useMarketWebSocket({
     cleanupActiveSocket();
 
     const host = WS_HOSTS[hostIndexRef.current % WS_HOSTS.length];
-    const streams = [
-      `${pair}@kline_${timeframe}`,
-      `${pair}@aggTrade`,
-      `${pair}@depth20@100ms`,
-      `${pair}@bookTicker`,
-      `${pair}@ticker`,
-    ].join("/");
+    const streams = [`${pair}@kline_${timeframe}`].join("/");
 
     if (attemptsRef.current === 0) setWsStatus("connecting");
     let ws: WebSocket;
