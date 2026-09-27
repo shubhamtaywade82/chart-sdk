@@ -4,15 +4,15 @@
   "type": "module",
   "main": "./dist/index.cjs",
   "module": "./dist/index.js",
-  "types": "./dist/index.d.ts",
+  "types": "./dist/src/index.d.ts",
   "exports": {
     ".": {
-      "types": "./dist/index.d.ts",
+      "types": "./dist/src/index.d.ts",
       "import": "./dist/index.js",
       "require": "./dist/index.cjs"
     },
     "./core": {
-      "types": "./dist/core.d.ts",
+      "types": "./dist/src/core.d.ts",
       "import": "./dist/core.js",
       "require": "./dist/core.cjs"
     },
@@ -52,7 +52,7 @@
   "dependencies": {
     "@monaco-editor/react": "^4.7.0",
     "@nemesis-oss/coindcx-sdk": "^1.2.0",
-    "@nemesis-oss/pine-ts": "^0.1.0",
+    "@nemesis-oss/pine-ts": "^0.1.1",
     "axios": "^1.13.6",
     "cors": "^2.8.5",
     "dotenv": "^17.3.1",

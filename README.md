@@ -13,6 +13,7 @@ Designed with the **DataAdapter Pattern**, the chart engine, indicator suites (S
 - [The `IDataAdapter` Contract](#-the-idataadapter-contract)
 - [Included Adapters](#-included-adapters)
 - [Chart Engine & Indicator Suite](#-chart-engine--indicator-suite)
+- [Pine-TS Integration Guide](docs/PINE-TS-INTEGRATION.md)
 - [Quickstart & Running Apps](#-quickstart--running-apps)
 - [Step-by-Step: Adding a New Broker](#-step-by-step-adding-a-new-broker)
 - [Production Builds](#-production-builds)
@@ -172,11 +173,13 @@ export interface IDataAdapter {
 ## 📦 Included Adapters
 
 ### 1. `BinanceAdapter` (`src/adapters/BinanceAdapter.ts`)
+
 - **Market**: Crypto Futures USD-M (BTCUSDT, ETHUSDT, SOLUSDT, BNBUSDT, XRPUSDT)
 - **Timeframes**: 1m, 3m, 5m, 15m, 30m, 1h, 4h, 1D
 - **Features**: 24/7 continuous stream, real-time WebSocket tick pipeline, L2 order book.
 
 ### 2. `DhanHQAdapter` (`src/adapters/DhanHQAdapter.ts`)
+
 - **Market**: NSE/BSE Indian Indices & Equities (NIFTY 50, BANK NIFTY, SENSEX, RELIANCE, HDFCBANK, TCS, INFY)
 - **Timeframes**: 1m, 5m, 15m, 30m, 1h
 - **Features**: Market session hours awareness, option chain/desk feeds, ₹ currency handling.
@@ -232,18 +235,21 @@ The shared `TradingViewChart` includes advanced trading visuals and AI overlays 
 ## ⚡ Quickstart & Running Apps
 
 Install dependencies:
+
 ```bash
 cd chart-sdk
 npm install
 ```
 
 ### Launch Binance Futures Chart
+
 ```bash
 npm run dev:binance
 # Opens on http://localhost:5200 (proxies API to localhost:3002)
 ```
 
 ### Launch DhanHQ NSE Chart
+
 ```bash
 npm run dev:dhanhq
 # Opens on http://localhost:5201 (proxies API to localhost:3003)
@@ -256,7 +262,9 @@ npm run dev:dhanhq
 To connect a new broker (e.g., **CoinDCX**, **Bybit**, **Interactive Brokers**, or **Zerodha**):
 
 ### 1. Implement `IDataAdapter`
+
 Create `src/adapters/CoinDCXAdapter.ts`:
+
 ```typescript
 import type { IDataAdapter, Candle, TickPayload, SymbolDef, IntervalDef } from "./IDataAdapter";
 
@@ -306,13 +314,17 @@ export class CoinDCXAdapter implements IDataAdapter {
 ```
 
 ### 2. Export the Adapter
+
 In `src/adapters/index.ts`:
+
 ```typescript
 export { CoinDCXAdapter } from "./CoinDCXAdapter";
 ```
 
 ### 3. Create the App Shell
+
 Create `src/apps/coindcx/App.tsx`:
+
 ```tsx
 import React, { useState } from "react";
 import { TradingViewChart } from "../../components/TradingViewChart";
@@ -340,7 +352,9 @@ export default App;
 ```
 
 ### 4. Add npm Run Script
+
 In `package.json`:
+
 ```json
 {
   "scripts": {
@@ -366,6 +380,7 @@ npm run build:dhanhq
 ```
 
 Verify type safety anytime:
+
 ```bash
 npm run typecheck
 ```

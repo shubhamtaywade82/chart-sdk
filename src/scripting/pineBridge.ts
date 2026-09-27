@@ -11,7 +11,11 @@ const runOnClose = (source: number[], build: (session: PineSession) => FloatSeri
 
   source.forEach((close, i) => {
     const bar: Bar = { time: i, open: close, high: close, low: close, close, volume: 0 };
-    session.processHistoricalBar(bar, () => series.at(0), i === lastIndex);
+    const isLast = i === lastIndex;
+    session.processHistoricalBar(bar, () => series.at(0), {
+      isLast,
+      isLastConfirmedHistory: isLast,
+    });
   });
 
   return [...series.history()];

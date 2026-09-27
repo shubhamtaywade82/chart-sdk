@@ -58,6 +58,7 @@ export * from "./utils/ollamaContextEngine";
 // ── Scripting Runtime & Sandbox ──────────────────────────────────────────────
 export * from "./scripting/types";
 export { executeScript } from "./scripting/scriptSandbox";
+export * from "./scripting/pineTsAdapter";
 export * from "./scripting/backtestEngine";
 export * from "./scripting/pineTranspiler";
 export * from "./scripting/scriptStorage";
