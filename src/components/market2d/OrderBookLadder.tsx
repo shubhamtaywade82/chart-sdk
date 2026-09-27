@@ -1,15 +1,15 @@
 import React from "react";
-import { DepthData } from "../market3d/types";
+import type { OrderBookState } from "../../../server/binance/engine/types";
 import { formatPrice, formatQty } from "../market3d/dataService";
 
 interface OrderBookLadderProps {
-  depth: DepthData | null;
+  book: OrderBookState | null;
   livePrice: number | null;
   rows?: number;
 }
 
-export function OrderBookLadder({ depth, livePrice, rows = 12 }: OrderBookLadderProps) {
-  if (!depth) {
+export function OrderBookLadder({ book, livePrice, rows = 12 }: OrderBookLadderProps) {
+  if (!book) {
     return (
       <div className="m2-ladder">
         <div className="m2-panel-head"><span className="m2-panel-title">ORDER BOOK</span></div>
@@ -17,28 +17,28 @@ export function OrderBookLadder({ depth, livePrice, rows = 12 }: OrderBookLadder
     );
   }
 
-  const asks = depth.asks.slice(0, rows);
-  const bids = depth.bids.slice(0, rows);
+  const asks = book.asks.slice(0, rows);
+  const bids = book.bids.slice(0, rows);
 
   let cumAsk = 0;
   let maxCum = 0;
   const askRows = asks
-    .map(([p, q]) => {
-      cumAsk += Number(q);
+    .map((l) => {
+      cumAsk += l.qty;
       maxCum = Math.max(maxCum, cumAsk);
-      return { price: Number(p), qty: Number(q), cum: cumAsk };
+      return { price: l.price, qty: l.qty, cum: cumAsk };
     })
     .reverse();
 
   let cumBid = 0;
-  const bidRows = bids.map(([p, q]) => {
-    cumBid += Number(q);
+  const bidRows = bids.map((l) => {
+    cumBid += l.qty;
     maxCum = Math.max(maxCum, cumBid);
-    return { price: Number(p), qty: Number(q), cum: cumBid };
+    return { price: l.price, qty: l.qty, cum: cumBid };
   });
 
-  const bestBid = bids[0] ? Number(bids[0][0]) : 0;
-  const bestAsk = asks[0] ? Number(asks[0][0]) : 0;
+  const bestBid = bids[0]?.price ?? 0;
+  const bestAsk = asks[0]?.price ?? 0;
   const mid = bestBid && bestAsk ? (bestBid + bestAsk) / 2 : livePrice || 0;
   const spread = bestBid && bestAsk ? bestAsk - bestBid : 0;
   const spreadBps = mid > 0 ? (spread / mid) * 1e4 : 0;

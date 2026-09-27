@@ -12,10 +12,10 @@ const AXIS_W = 64;
 const VOL_FRAC = 0.18;
 const GAP = 6;
 
-export function pushDepthSnapshot(buf: DepthSnapshot[], bids: Array<[string, string]>, asks: Array<[string, string]>) {
+export function pushDepthSnapshot(buf: DepthSnapshot[], bids: Array<{ price: number; qty: number }>, asks: Array<{ price: number; qty: number }>) {
   buf.push({
-    bids: bids.map(([p, q]) => [Number(p), Number(q)] as [number, number]),
-    asks: asks.map(([p, q]) => [Number(p), Number(q)] as [number, number]),
+    bids: bids.map((l) => [l.price, l.qty] as [number, number]),
+    asks: asks.map((l) => [l.price, l.qty] as [number, number]),
   });
   if (buf.length > HEATMAP_CAPACITY) buf.shift();
 }
