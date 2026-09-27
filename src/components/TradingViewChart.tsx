@@ -2680,6 +2680,33 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
             ctx.shadowColor = "transparent";
           });
 
+          // Step B2: Render Trailing Stop AMA (Adaptive Moving Average)
+          ctx.beginPath();
+          let amaStarted = false;
+          for (let i = 0; i < supertrendPoints.length; i++) {
+            const pt = supertrendPoints[i];
+            if (!pt.ama) continue;
+            const x = timeScale.timeToCoordinate(pt.time as any);
+            const y = series.priceToCoordinate(pt.ama);
+            if (x !== null && y !== null && !isNaN(x) && !isNaN(y) && x >= -50 && x <= maxVisibleX + 50) {
+              if (!amaStarted) {
+                ctx.moveTo(x, y);
+                amaStarted = true;
+              } else {
+                ctx.lineTo(x, y);
+              }
+            } else {
+              amaStarted = false;
+            }
+          }
+          if (amaStarted) {
+            ctx.strokeStyle = "rgba(0, 229, 255, 0.65)";
+            ctx.lineWidth = 1.2;
+            ctx.setLineDash([4, 4]);
+            ctx.stroke();
+            ctx.setLineDash([]);
+          }
+
           // Step C: Render clean glowing AI flip badges with multi-factor confidence %
           for (let i = 1; i < supertrendPoints.length; i++) {
             const ptCurr = supertrendPoints[i];
@@ -5284,8 +5311,12 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
                   ADX: {regime.adx} {regime.adx >= (regime.adxThreshold || 25) ? `(≥${regime.adxThreshold || 25} Trend)` : `(<${regime.adxThreshold || 25} Weak)`}
                 </span>
                 <span style={{ color: "var(--text-muted)", fontWeight: 500 }}>·</span>
+                <span style={{ color: sig.tradeBias === "LONG BIAS" ? "#00F5A0" : sig.tradeBias === "SHORT BIAS" ? "#FF495C" : "#FFD700" }}>
+                  BIAS: {sig.tradeBias || "WAIT"} ({sig.tradeState || "NEUTRAL"})
+                </span>
+                <span style={{ color: "var(--text-muted)", fontWeight: 500 }}>·</span>
                 <span style={{ color: "var(--text-secondary)", fontFamily: "monospace" }}>
-                  STOP: {currency}{sig.stop.toLocaleString()}
+                  STOP: {currency}{sig.stop.toLocaleString()} {sig.ama ? `· AMA: ${currency}${Number(sig.ama.toFixed(2)).toLocaleString()}` : ""}
                 </span>
                 <span style={{ color: "var(--text-muted)", fontWeight: 500 }}>·</span>
                 <span style={{ color: isAdapted ? "#00F5A0" : "var(--accent-cyan)", fontFamily: "monospace", fontSize: "10px" }}>
