@@ -51,6 +51,7 @@
   },
   "dependencies": {
     "@monaco-editor/react": "^4.7.0",
+    "@nemesis-oss/binance-sdk": "^3.0.0",
     "@nemesis-oss/coindcx-sdk": "^1.2.0",
     "@nemesis-oss/pine-ts": "^0.1.1",
     "axios": "^1.13.6",

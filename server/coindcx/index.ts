@@ -418,7 +418,7 @@ const parseRawWsPayload = (raw: any): any =>
 
 const handleRawDepth = (raw: any) => {
   const p = parseRawWsPayload(raw);
-  const pair = p?.pair ?? p?.s ?? "unknown";
+  const pair = symbolToPair(p?.pair ?? p?.s ?? "unknown");
   depthByPair.set(pair, {
     bids: depthMapToLevels(p?.bids).sort((a, b) => b.price - a.price),
     asks: depthMapToLevels(p?.asks).sort((a, b) => a.price - b.price),
@@ -435,8 +435,9 @@ const ensureDealClient = async (): Promise<CoinDCXClient | null> => {
     apiSecret: FUTURES_API_SECRET,
     debug: process.env.COINDCX_DEBUG === "true",
   });
-  dealClient.publicStreams.on("onCandle", (candle: any) => {
-    const sym = pairToSymbol(candle.pair || candle.symbol || "");
+  (dealClient.publicStreams as any).on("candle", (candle: any) => {
+    const pair = symbolToPair(candle.pair || candle.symbol || "");
+    const sym = pairToSymbol(pair);
     const msg = {
       type: "candle",
       securityId: sym,
@@ -451,13 +452,32 @@ const ensureDealClient = async (): Promise<CoinDCXClient | null> => {
     };
     broadcast(msg);
     if (candle.close > 0) {
-      lastTickByPair.set(candle.pair || "", { price: Number(candle.close), change: 0, pChange: 0, prevClose: Number(candle.open) });
+      const prev = lastTickByPair.get(pair);
+      const price = Number(candle.close);
+      lastTickByPair.set(pair, {
+        price,
+        change: prev?.price ? round(price - prev.price, 4) : 0,
+        pChange: prev?.price ? round(((price - prev.price) / prev.price) * 100, 4) : 0,
+        prevClose: prev?.prevClose || Number(candle.open) || price,
+      });
     }
   });
   dealClient.ws.on("depth-snapshot", handleRawDepth);
   dealClient.ws.on("depth-update", handleRawDepth);
-  dealClient.publicStreams.on("onPriceChange", (update: any) => {
-    const pair = update.symbol || "";
+  (dealClient.publicStreams as any).on("trade", (trade: any) => {
+    const pair = symbolToPair(trade.symbol || "");
+    const price = Number(trade.price);
+    if (!price) return;
+    const prev = lastTickByPair.get(pair);
+    lastTickByPair.set(pair, {
+      price,
+      change: prev?.price ? round(price - prev.price, 4) : 0,
+      pChange: prev?.price ? round(((price - prev.price) / prev.price) * 100, 4) : 0,
+      prevClose: prev?.prevClose || price,
+    });
+  });
+  (dealClient.publicStreams as any).on("priceChange", (update: any) => {
+    const pair = symbolToPair(update.symbol || "");
     const prev = lastTickByPair.get(pair);
     const price = Number(update.price);
     if (prev && prev.price > 0) {
@@ -466,9 +486,9 @@ const ensureDealClient = async (): Promise<CoinDCXClient | null> => {
     }
     lastTickByPair.set(pair, { price, change: prev?.change || 0, pChange: prev?.pChange || 0, prevClose: prev?.prevClose || price });
   });
-  dealClient.privateStreams.on("onPositionUpdate", (data: any) => broadcast({ type: "account", kind: "positions", data }));
-  dealClient.privateStreams.on("onOrderUpdate", (data: any) => broadcast({ type: "account", kind: "orders", data }));
-  dealClient.privateStreams.on("onBalanceUpdate", (data: any) => broadcast({ type: "account", kind: "balances", data }));
+  (dealClient.privateStreams as any).on("positionUpdate", (data: any) => broadcast({ type: "account", kind: "positions", data }));
+  (dealClient.privateStreams as any).on("orderUpdate", (data: any) => broadcast({ type: "account", kind: "orders", data }));
+  (dealClient.privateStreams as any).on("balanceUpdate", (data: any) => broadcast({ type: "account", kind: "balances", data }));
 
   try {
     await dealClient.connectWebsocket();
@@ -494,7 +514,25 @@ const subscribePair = async (pair: string) => {
   if (!client) return;
   client.publicStreams.subscribeCandles(pair, "1m");
   client.publicStreams.subscribeOrderBook(pair, 50);
+  client.publicStreams.subscribeTrades(pair);
   client.publicStreams.subscribePrices(pair);
+
+  if (!lastTickByPair.has(pair)) {
+    getFuturesCandles(pair, undefined, undefined, "1m", 2)
+      .then((candles) => {
+        const last = candles[candles.length - 1];
+        const prev = candles[candles.length - 2];
+        if (last && last.close && !lastTickByPair.has(pair)) {
+          lastTickByPair.set(pair, {
+            price: last.close,
+            change: prev ? round(last.close - prev.close, 4) : 0,
+            pChange: prev ? round(((last.close - prev.close) / prev.close) * 100, 4) : 0,
+            prevClose: prev?.close || last.open || last.close,
+          });
+        }
+      })
+      .catch(() => {});
+  }
 };
 
 const unsubscribePair = (pair: string) => {
@@ -503,6 +541,12 @@ const unsubscribePair = (pair: string) => {
     subscribersByPair.delete(pair);
     depthByPair.delete(pair);
     lastTickByPair.delete(pair);
+    if (dealClient) {
+      dealClient.publicStreams.unsubscribeCandles(pair, "1m");
+      dealClient.publicStreams.unsubscribeOrderBook(pair, 50);
+      dealClient.publicStreams.unsubscribeTrades(pair);
+      dealClient.publicStreams.unsubscribePrices(pair);
+    }
   } else {
     subscribersByPair.set(pair, count);
   }
