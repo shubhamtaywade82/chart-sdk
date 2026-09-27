@@ -69,6 +69,22 @@ export class WebSocketFeedService {
         // the engine is still starting awaits the SAME promise instead of reading an empty snapshot.
         await entry.startPromise;
 
+        // If this socket closed, or moved on to a different symbol, while we were waiting for
+        // the engine to seed, its close/re-subscribe already fired and won't fire again — joining
+        // now would register a client nothing will ever unsubscribe, leaking this engine's WS
+        // stream, funding poll, and flush timer forever.
+        if (currentSymbol !== symbol || ws.readyState !== WebSocket.OPEN) {
+          // Nobody else joined this engine either (it was just created for this now-stale
+          // subscriber) — nothing will ever call unsubscribeCurrent for it, so reap it here
+          // instead of leaving a zero-subscriber engine running forever.
+          if (entry.subscriberCount === 0 && entry.clients.size === 0 && this.engines.get(symbol) === entry) {
+            entry.engine.stop();
+            this.engines.delete(symbol);
+            console.log(`🧹 stopped orphaned engine nobody ended up subscribing to: ${symbol}`);
+          }
+          return;
+        }
+
         entry.subscriberCount++;
         entry.clients.add(ws);
 

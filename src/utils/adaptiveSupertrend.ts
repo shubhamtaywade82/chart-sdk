@@ -328,16 +328,17 @@ export class AdaptiveSupertrend {
       { perfs: [], factors: [] },
       { perfs: [], factors: [] },
     ];
-    let bestMember = this.ensemble[0];
     this.ensemble.forEach((m) => {
       const idx = this.nearestCentroidIdx(m.perf, cents);
       clusters[idx].perfs.push(m.perf);
       clusters[idx].factors.push(m.factor);
-      if (m.perf > bestMember.perf) bestMember = m;
     });
     const targetIdx = this.fromCluster === "Best" ? 2 : this.fromCluster === "Average" ? 1 : 0;
     const tfList = clusters[targetIdx].factors;
-    const factorAvg = tfList.length > 0 ? tfList.reduce((a, b) => a + b, 0) / tfList.length : bestMember.factor;
+    // Warm-up bars (all-zero perf) put every member in the middle cluster, leaving the
+    // selected cluster empty — fall back to the configured multiplier, not the arbitrary
+    // first/minimum ensemble factor, so presets with different fallbackMult actually differ.
+    const factorAvg = tfList.length > 0 ? tfList.reduce((a, b) => a + b, 0) / tfList.length : this.fallbackMult;
     const bestDisp = this.calcDispersion(clusters[2].perfs, cents[2]);
     return {
       factor: Math.max(this.minMult, Math.min(this.maxMult, factorAvg)),
