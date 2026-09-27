@@ -1,6 +1,6 @@
 import { useEffect, useReducer, useRef, useState } from "react";
 import type { EngineMessage } from "../../server/binance/engine/types";
-import { applyEngineMessage, initialEngineState } from "./marketEngineState";
+import { applyEngineMessage, initialEngineState, type EngineState } from "./marketEngineState";
 
 export type WsEngineStatus = "connecting" | "live" | "reconnecting" | "offline";
 
@@ -10,7 +10,11 @@ const PING_INTERVAL_MS = 12000;
 const RATE_WINDOW_MS = 1000;
 
 export function useMarketEngine(symbol: string) {
-  const [state, dispatch] = useReducer(applyEngineMessage, initialEngineState);
+  const [state, dispatch] = useReducer(
+    (s: EngineState, action: EngineMessage | { type: "__reset" }) =>
+      action.type === "__reset" ? initialEngineState : applyEngineMessage(s, action as EngineMessage),
+    initialEngineState
+  );
   const [wsStatus, setWsStatus] = useState<WsEngineStatus>("connecting");
   const [msgRate, setMsgRate] = useState(0);
   const [pingMs, setPingMs] = useState<number | null>(null);
@@ -24,6 +28,8 @@ export function useMarketEngine(symbol: string) {
   useEffect(() => {
     isDestroyedRef.current = false;
     reconnectAttemptsRef.current = 0;
+    dispatch({ type: "__reset" });
+    setWsStatus("connecting");
 
     const cleanupSocket = (ws: WebSocket | null) => {
       if (!ws) return;
