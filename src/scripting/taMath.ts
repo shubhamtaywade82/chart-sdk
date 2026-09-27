@@ -1,36 +1,14 @@
 // Mathematical and Technical Analysis routines for Pine Script v6 and JS runtime
+import { taEmaPine, taSmaPine } from "./pineBridge";
 
 export const taSma = (source: number[], length: number): number[] => {
-  const result: number[] = new Array(source.length).fill(NaN);
-  if (length <= 0 || source.length < length) return result;
-
-  let sum = 0;
-  for (let i = 0; i < length; i++) {
-    sum += source[i] || 0;
-  }
-  result[length - 1] = sum / length;
-
-  for (let i = length; i < source.length; i++) {
-    sum += (source[i] || 0) - (source[i - length] || 0);
-    result[i] = sum / length;
-  }
-  return result;
+  if (length <= 0 || source.length < length) return new Array(source.length).fill(NaN);
+  return taSmaPine(source, length);
 };
 
 export const taEma = (source: number[], length: number): number[] => {
-  const result: number[] = new Array(source.length).fill(NaN);
-  if (length <= 0 || source.length < length) return result;
-
-  const k = 2 / (length + 1);
-  let ema = source[0] || 0;
-  result[0] = ema;
-
-  for (let i = 1; i < source.length; i++) {
-    const val = source[i] || 0;
-    ema = val * k + ema * (1 - k);
-    result[i] = ema;
-  }
-  return result;
+  if (length <= 0 || source.length < length) return new Array(source.length).fill(NaN);
+  return taEmaPine(source, length);
 };
 
 export const taRsi = (source: number[], length = 14): number[] => {

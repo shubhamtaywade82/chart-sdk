@@ -25,6 +25,7 @@
   "scripts": {
     "build:package": "vite build --config vite.lib.config.ts && tsc -p tsconfig.build.json",
     "dev:crypto": "tsx server/binance/index.ts & tsx server/coindcx/index.ts & VITE_APP=crypto vite --port 5200",
+    "paper:crypto": "npm run dev:crypto",
     "dev:binance": "npm run dev:crypto",
     "dev:dhanhq": "tsx server/dhanhq/index.ts & VITE_APP=dhanhq vite --port 5201",
     "dev:coindcx": "tsx server/coindcx/index.ts & VITE_APP=coindcx vite --port 5202",
@@ -50,8 +51,9 @@
   },
   "dependencies": {
     "@monaco-editor/react": "^4.7.0",
+    "@nemesis-oss/coindcx-sdk": "^1.2.0",
+    "@nemesis-oss/pine-ts": "^0.1.0",
     "axios": "^1.13.6",
-    "coindcx-client-js": "github:shubhamtaywade82/coindcx-client-js",
     "cors": "^2.8.5",
     "dotenv": "^17.3.1",
     "express": "^4.21.2",
