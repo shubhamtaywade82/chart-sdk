@@ -1,7 +1,8 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
-import { Candle3D, MarketStats, Timeframe3D, Market3DProps, DepthData, TradeItem, BookTicker } from "../market3d/types";
+import { Candle3D, MarketStats, Timeframe3D, Market3DProps } from "../market3d/types";
 import { fetchKlinesFromBinance, computeMarketStats, restBinanceGet } from "../market3d/dataService";
 import { useMarketWebSocket } from "../market3d/useMarketWebSocket";
+import { useMarketEngine } from "../../hooks/useMarketEngine";
 import { Market3DHeader } from "../market3d/Market3DHeader";
 import { TimeAndSalesPanel } from "../market3d/TimeAndSalesPanel";
 import "../market3d/market3d.css";
@@ -21,13 +22,12 @@ export function Market2DView({
   const [candleCount, setCandleCount] = useState(defaultCandleCount);
   const [data, setData] = useState<Candle3D[]>([]);
   const [stats, setStats] = useState<MarketStats>({ hi: 0, lo: 0, vol: 0, chg: 0, win: "24H" });
-  const [depth, setDepth] = useState<DepthData | null>(null);
-  const [trades, setTrades] = useState<TradeItem[]>([]);
-  const [bookTicker, setBookTicker] = useState<BookTicker | null>(null);
   const [showHeatmap, setShowHeatmap] = useState(true);
   const [showVolume, setShowVolume] = useState(true);
 
   const depthHistoryRef = useRef<DepthSnapshot[]>([]);
+
+  const engine = useMarketEngine(currentSymbol);
 
   const handleKlineStream = useCallback(
     (k: Candle3D) => {
@@ -50,28 +50,15 @@ export function Market2DView({
     [candleCount]
   );
 
-  const handleTradeStream = useCallback((t: TradeItem) => {
-    setTrades((prev) => [t, ...prev.slice(0, 49)]);
-  }, []);
-
-  const handleDepthStream = useCallback((d: DepthData) => {
-    setDepth(d);
-    pushDepthSnapshot(depthHistoryRef.current, d.bids, d.asks);
-  }, []);
-
-  const handleTicker24hStream = useCallback((partial: Partial<MarketStats>) => {
-    setStats((prev) => ({ ...prev, ...partial }));
-  }, []);
-
-  const { wsStatus, msgRate, pingMs } = useMarketWebSocket({
+  useMarketWebSocket({
     symbol: currentSymbol,
     timeframe,
     onKline: handleKlineStream,
-    onTrade: handleTradeStream,
-    onDepth: handleDepthStream,
-    onBookTicker: setBookTicker,
-    onTicker24h: handleTicker24hStream,
   });
+
+  useEffect(() => {
+    pushDepthSnapshot(depthHistoryRef.current, engine.book.bids, engine.book.asks);
+  }, [engine.book]);
 
   const handleSelectSymbol = (sym: string) => {
     setCurrentSymbol(sym);
@@ -91,12 +78,6 @@ export function Market2DView({
         const tk = await restBinanceGet<any>(`/api/v3/ticker/24hr?symbol=${pair}`);
         setStats((prev) => ({ ...prev, chg: Number(tk.P), hi: Number(tk.h), lo: Number(tk.l), vol: Number(tk.v) }));
       } catch {}
-      try {
-        const bt = await restBinanceGet<any>(`/api/v3/ticker/bookTicker?symbol=${pair}`);
-        const b = Number(bt.bidPrice); const a = Number(bt.askPrice);
-        const spr = a - b;
-        setBookTicker({ bid: b, ask: a, spread: spr, spreadBps: ((a + b) > 0 ? (spr / ((a + b) / 2)) * 1e4 : 0) });
-      } catch {}
     } catch {
       // Fallback handled inside fetchKlinesFromBinance
     }
@@ -109,6 +90,12 @@ export function Market2DView({
   const activeCandle = data.length > 0 ? data[data.length - 1] : null;
   const timeframes: Timeframe3D[] = ["15m", "1h", "4h", "1d"];
 
+  const bestBid = engine.book.bids[0]?.price;
+  const bestAsk = engine.book.asks[0]?.price;
+  const bookTicker = bestBid != null && bestAsk != null
+    ? { bid: bestBid, ask: bestAsk, spread: bestAsk - bestBid, spreadBps: ((bestAsk + bestBid) > 0 ? ((bestAsk - bestBid) / ((bestAsk + bestBid) / 2)) * 1e4 : 0) }
+    : null;
+
   return (
     <div className="m2-root">
       <Market3DHeader
@@ -117,9 +104,9 @@ export function Market2DView({
         activeCandle={activeCandle}
         stats={stats}
         bookTicker={bookTicker}
-        wsStatus={wsStatus}
-        msgRate={msgRate}
-        pingMs={pingMs}
+        wsStatus={engine.wsStatus}
+        msgRate={engine.msgRate}
+        pingMs={engine.pingMs}
       />
 
       <div className="m2-toolbar">
@@ -151,9 +138,9 @@ export function Market2DView({
       <div className="m2-body">
         <CandleCanvas data={data} depthHistoryRef={depthHistoryRef} showHeatmap={showHeatmap} showVolume={showVolume} />
         <div className="m2-dock">
-          <OrderBookLadder depth={depth} livePrice={activeCandle?.c || null} />
+          <OrderBookLadder book={engine.book} livePrice={activeCandle?.c || null} />
           <div className="m2-tape-dock">
-            <TimeAndSalesPanel trades={trades} isOpen={true} />
+            <TimeAndSalesPanel trades={engine.trades} isOpen={true} />
           </div>
         </div>
       </div>
