@@ -1,5 +1,13 @@
 // Mathematical and Technical Analysis routines for Pine Script v6 and JS runtime
-import { taEmaPine, taSmaPine } from "./pineBridge";
+import {
+  taBollingerBandsPine,
+  taEmaPine,
+  taHighestPine,
+  taLowestPine,
+  taMacdPine,
+  taRsiPine,
+  taSmaPine,
+} from "./pineBridge";
 
 export const taSma = (source: number[], length: number): number[] => {
   if (length <= 0 || source.length < length) return new Array(source.length).fill(NaN);
@@ -12,34 +20,18 @@ export const taEma = (source: number[], length: number): number[] => {
 };
 
 export const taRsi = (source: number[], length = 14): number[] => {
-  const result: number[] = new Array(source.length).fill(NaN);
-  if (source.length <= length) return result;
+  if (length <= 0 || source.length <= length) return new Array(source.length).fill(NaN);
+  return taRsiPine(source, length);
+};
 
-  let gains = 0;
-  let losses = 0;
+export const taHighest = (source: number[], length: number): number[] => {
+  if (length <= 0 || source.length < length) return new Array(source.length).fill(NaN);
+  return taHighestPine(source, length);
+};
 
-  for (let i = 1; i <= length; i++) {
-    const change = (source[i] || 0) - (source[i - 1] || 0);
-    if (change > 0) gains += change;
-    else losses += Math.abs(change);
-  }
-
-  let avgGain = gains / length;
-  let avgLoss = losses / length;
-
-  result[length] = avgLoss === 0 ? 100 : 100 - 100 / (1 + avgGain / avgLoss);
-
-  for (let i = length + 1; i < source.length; i++) {
-    const change = (source[i] || 0) - (source[i - 1] || 0);
-    const gain = change > 0 ? change : 0;
-    const loss = change < 0 ? Math.abs(change) : 0;
-
-    avgGain = (avgGain * (length - 1) + gain) / length;
-    avgLoss = (avgLoss * (length - 1) + loss) / length;
-
-    result[i] = avgLoss === 0 ? 100 : 100 - 100 / (1 + avgGain / avgLoss);
-  }
-  return result;
+export const taLowest = (source: number[], length: number): number[] => {
+  if (length <= 0 || source.length < length) return new Array(source.length).fill(NaN);
+  return taLowestPine(source, length);
 };
 
 export const taMacd = (
@@ -48,28 +40,8 @@ export const taMacd = (
   slow = 26,
   signal = 9
 ): { macd: number[]; signal: number[]; hist: number[] } => {
-  const fastEma = taEma(source, fast);
-  const slowEma = taEma(source, slow);
-  const macdLine = source.map((_, i) =>
-    isNaN(fastEma[i]) || isNaN(slowEma[i]) ? NaN : fastEma[i] - slowEma[i]
-  );
-
-  const firstValid = macdLine.findIndex((v) => !isNaN(v));
-  const validMacd = firstValid >= 0 ? macdLine.slice(firstValid) : [];
-  const validSignal = taEma(validMacd, signal);
-
-  const signalLine: number[] = new Array(source.length).fill(NaN);
-  if (firstValid >= 0) {
-    for (let i = 0; i < validSignal.length; i++) {
-      signalLine[firstValid + i] = validSignal[i];
-    }
-  }
-
-  const hist = macdLine.map((m, i) =>
-    isNaN(m) || isNaN(signalLine[i]) ? NaN : m - signalLine[i]
-  );
-
-  return { macd: macdLine, signal: signalLine, hist };
+  if (source.length === 0) return { macd: [], signal: [], hist: [] };
+  return taMacdPine(source, fast, slow, signal);
 };
 
 export const taTrueRange = (candles: { high: number; low: number; close: number }[]): number[] => {
@@ -116,31 +88,6 @@ export const taStoch = (
   return { k, d };
 };
 
-export const taHighest = (source: number[], length: number): number[] => {
-  const result: number[] = new Array(source.length).fill(NaN);
-  for (let i = length - 1; i < source.length; i++) {
-    let max = -Infinity;
-    for (let j = 0; j < length; j++) {
-      const v = source[i - j] ?? -Infinity;
-      if (v > max) max = v;
-    }
-    result[i] = max;
-  }
-  return result;
-};
-
-export const taLowest = (source: number[], length: number): number[] => {
-  const result: number[] = new Array(source.length).fill(NaN);
-  for (let i = length - 1; i < source.length; i++) {
-    let min = Infinity;
-    for (let j = 0; j < length; j++) {
-      const v = source[i - j] ?? Infinity;
-      if (v < min) min = v;
-    }
-    result[i] = min;
-  }
-  return result;
-};
 
 export const taCrossover = (a: number[], b: number[]): boolean[] => {
   const result = new Array(a.length).fill(false);
@@ -167,21 +114,9 @@ export const taBollingerBands = (
   length = 20,
   mult = 2
 ): { middle: number[]; upper: number[]; lower: number[] } => {
-  const middle = taSma(source, length);
-  const upper = new Array(source.length).fill(NaN);
-  const lower = new Array(source.length).fill(NaN);
-
-  for (let i = length - 1; i < source.length; i++) {
-    const mean = middle[i];
-    let sumSq = 0;
-    for (let j = 0; j < length; j++) {
-      const diff = (source[i - j] || 0) - mean;
-      sumSq += diff * diff;
-    }
-    const stdev = Math.sqrt(sumSq / length);
-    upper[i] = mean + mult * stdev;
-    lower[i] = mean - mult * stdev;
+  if (length <= 0 || source.length < length) {
+    const empty = new Array(source.length).fill(NaN);
+    return { middle: empty, upper: empty, lower: empty };
   }
-
-  return { middle, upper, lower };
+  return taBollingerBandsPine(source, length, mult);
 };

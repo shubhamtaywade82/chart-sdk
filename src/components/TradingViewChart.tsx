@@ -19,6 +19,7 @@ import { ScriptEditorModal } from "./scripting/ScriptEditorModal";
 import { ScriptLibraryModal } from "./scripting/ScriptLibraryModal";
 import { BacktestResultsPanel } from "./scripting/BacktestResultsPanel";
 import { executeScript } from "../scripting/scriptSandbox";
+import { executePineTsScriptFull } from "../scripting/pineTsAdapter";
 import { runBacktest } from "../scripting/backtestEngine";
 import type { ScriptExecutionResult, ScriptLanguage, UserScript } from "../scripting/types";
 import {
@@ -1253,15 +1254,17 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
 
     // For strategies, execute backtest simulation
     if (result.type === "strategy" && allCandlesRef.current.length > 0) {
-      const buySignals = result.shapes.filter((s) => s.style === "triangleup").map((s) => s.time);
-      const sellSignals = result.shapes.filter((s) => s.style === "triangledown").map((s) => s.time);
-      const buyMask = allCandlesRef.current.map((c) => buySignals.includes(c.time));
-      const sellMask = allCandlesRef.current.map((c) => sellSignals.includes(c.time));
+      if (!result.trades) {
+        const buySignals = result.shapes.filter((s) => s.style === "triangleup").map((s) => s.time);
+        const sellSignals = result.shapes.filter((s) => s.style === "triangledown").map((s) => s.time);
+        const buyMask = allCandlesRef.current.map((c) => buySignals.includes(c.time));
+        const sellMask = allCandlesRef.current.map((c) => sellSignals.includes(c.time));
 
-      const backtestRes = runBacktest(allCandlesRef.current, buyMask, sellMask);
-      result.trades = backtestRes.trades;
-      result.equityCurve = backtestRes.equityCurve;
-      result.stats = backtestRes.stats;
+        const backtestRes = runBacktest(allCandlesRef.current, buyMask, sellMask);
+        result.trades = backtestRes.trades;
+        result.equityCurve = backtestRes.equityCurve;
+        result.stats = backtestRes.stats;
+      }
       setShowBacktestPanel(true);
     }
 
@@ -1269,11 +1272,20 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
     if (scriptInfo) setActiveCustomScript(scriptInfo);
   };
 
-  const handleRunScriptFromEditor = (code: string, language: ScriptLanguage, name: string) => {
+  const handleRunScriptFromEditor = async (code: string, language: ScriptLanguage, name: string) => {
     if (allCandlesRef.current.length === 0) {
       return { success: false, error: "No candle data loaded" };
     }
-    const result = executeScript(code, language, allCandlesRef.current);
+    const result = language === "typescript"
+      ? await executePineTsScriptFull({
+          candles: allCandlesRef.current,
+          symbol,
+          timeframe: interval,
+          script: code,
+          name,
+        })
+      : executeScript(code, language, allCandlesRef.current);
+
     if (result.success) {
       const userScript: UserScript = {
         id: `script_${Date.now()}`,
@@ -5737,8 +5749,18 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
             setShowScriptLibrary(false);
             if (runImmediately) {
               if (allCandlesRef.current.length > 0) {
-                const res = executeScript(script.code, script.language, allCandlesRef.current);
-                applyCustomScriptResult(res, script);
+                if (script.language === "typescript") {
+                  executePineTsScriptFull({
+                    candles: allCandlesRef.current,
+                    symbol,
+                    timeframe: interval,
+                    script: script.code,
+                    name: script.name,
+                  }).then((res) => applyCustomScriptResult(res, script));
+                } else {
+                  const res = executeScript(script.code, script.language, allCandlesRef.current);
+                  applyCustomScriptResult(res, script);
+                }
               }
             } else {
               setEditingScript(script);

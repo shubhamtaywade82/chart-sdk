@@ -1,5 +1,5 @@
 export type ScriptType = "indicator" | "strategy";
-export type ScriptLanguage = "pine" | "javascript";
+export type ScriptLanguage = "pine" | "javascript" | "typescript";
 
 export interface ScriptInputDef {
   id: string;

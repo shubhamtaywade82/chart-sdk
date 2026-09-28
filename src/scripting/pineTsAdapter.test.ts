@@ -1,6 +1,6 @@
 import { ta } from "@nemesis-oss/pine-ts";
 import { describe, expect, it } from "vitest";
-import { executePineTsScript } from "./pineTsAdapter";
+import { executePineTsScript, executePineTsScriptFull } from "./pineTsAdapter";
 
 describe("executePineTsScript", () => {
   it("maps chart candles to Pine bars and returns chart-ready indicator points", async () => {
@@ -52,5 +52,65 @@ describe("executePineTsScript", () => {
     });
 
     expect(ticker).toBe("NIFTY");
+  });
+
+  it("executes strategy logic and returns backtest metrics", async () => {
+    const candles = [10, 12, 14, 11, 9].map((close, i) => ({
+      time: i + 1,
+      open: close,
+      high: close + 1,
+      low: close - 1,
+      close,
+      volume: 10,
+    }));
+
+    const result = await executePineTsScriptFull({
+      candles,
+      symbol: "BTCUSDT",
+      timeframe: "1",
+      script: (ctx, plot, helpers) => {
+        plot(ctx.close.value, { title: "Close" });
+        if (ctx.bar_index.value === 1) helpers?.strategy.entry("Long", "LONG");
+        if (ctx.bar_index.value === 3) helpers?.strategy.close("Long");
+      },
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.type).toBe("strategy");
+    expect(result.trades).toBeDefined();
+    expect(result.trades?.length).toBe(1);
+    expect(result.stats).toBeDefined();
+  });
+
+  it("compiles and runs string script with shapes and helpers", async () => {
+    const candles = [10, 15, 20].map((close, i) => ({
+      time: i + 1,
+      open: close,
+      high: close + 1,
+      low: close - 1,
+      close,
+      volume: 10,
+    }));
+
+    const scriptCode = `
+      const { plot, plotshape, hline } = helpers;
+      plot(ctx.close.value, { title: "Price" });
+      hline(15, { title: "Mid" });
+      if (ctx.close.value >= 15) {
+        plotshape(true, { text: "HIGH" });
+      }
+    `;
+
+    const result = await executePineTsScriptFull({
+      candles,
+      symbol: "ETHUSDT",
+      timeframe: "5",
+      script: scriptCode,
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.plots[0].data.length).toBe(3);
+    expect(result.hlines.length).toBe(1);
+    expect(result.shapes.length).toBe(2);
   });
 });

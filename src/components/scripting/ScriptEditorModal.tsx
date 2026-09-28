@@ -7,7 +7,11 @@ import { saveUserScript, exportScriptFile } from "../../scripting/scriptStorage"
 interface ScriptEditorModalProps {
   initialScript?: UserScript | null;
   onClose: () => void;
-  onRunScript: (code: string, language: ScriptLanguage, name: string) => { success: boolean; error?: string };
+  onRunScript: (
+    code: string,
+    language: ScriptLanguage,
+    name: string
+  ) => Promise<{ success: boolean; error?: string }> | { success: boolean; error?: string };
 }
 
 const DEFAULT_PINE_SCRIPT_V6 = `//@version=6
@@ -29,6 +33,22 @@ plotshape(bull, style=shape.triangleup, location=location.belowbar, color=color.
 plotshape(bear, style=shape.triangledown, location=location.abovebar, color=color.red, text="SELL")
 `;
 
+const DEFAULT_PINE_TS_SCRIPT = `(ctx, { plot, plotshape, ta }) => {
+  // Pine-TS TypeScript Native Indicator
+  const fast = ta.ema(ctx.close, 9);
+  const slow = ta.ema(ctx.close, 21);
+
+  plot(fast.value, { title: "Fast EMA 9", color: "#00E5FF", lineWidth: 2 });
+  plot(slow.value, { title: "Slow EMA 21", color: "#FFA726", lineWidth: 2 });
+
+  const bull = ta.crossover(fast, slow).value;
+  const bear = ta.crossunder(fast, slow).value;
+
+  plotshape(bull, { style: "triangleup", location: "belowbar", color: "#00F5A0", text: "BUY" });
+  plotshape(bear, { style: "triangledown", location: "abovebar", color: "#FF495C", text: "SELL" });
+};
+`;
+
 export const ScriptEditorModal: React.FC<ScriptEditorModalProps> = ({
   initialScript,
   onClose,
@@ -39,16 +59,16 @@ export const ScriptEditorModal: React.FC<ScriptEditorModalProps> = ({
   const [code, setCode] = useState<string>(initialScript?.code || DEFAULT_PINE_SCRIPT_V6);
   const [status, setStatus] = useState<{ type: "success" | "error" | "ready"; msg: string }>({
     type: "ready",
-    msg: "Ready to execute (Pine Script v6)",
+    msg: "Ready to execute",
   });
 
-  const handleRun = () => {
-    setStatus({ type: "ready", msg: "Compiling and executing Pine v6 script..." });
-    const result = onRunScript(code, language, scriptName);
+  const handleRun = async () => {
+    setStatus({ type: "ready", msg: `Executing ${language} script...` });
+    const result = await onRunScript(code, language, scriptName);
     if (result.success) {
-      setStatus({ type: "success", msg: "Pine v6 script compiled and applied successfully!" });
+      setStatus({ type: "success", msg: `${language.toUpperCase()} script applied successfully!` });
     } else {
-      setStatus({ type: "error", msg: result.error || "Compilation failed" });
+      setStatus({ type: "error", msg: result.error || "Compilation/Execution failed" });
     }
   };
 
@@ -187,6 +207,24 @@ export const ScriptEditorModal: React.FC<ScriptEditorModalProps> = ({
                 PINE SCRIPT v6
               </button>
               <button
+                onClick={() => {
+                  setLanguage("typescript");
+                  if (code === DEFAULT_PINE_SCRIPT_V6) setCode(DEFAULT_PINE_TS_SCRIPT);
+                }}
+                style={{
+                  background: language === "typescript" ? "rgba(0, 229, 255, 0.2)" : "transparent",
+                  color: language === "typescript" ? "#00E5FF" : "rgba(255,255,255,0.6)",
+                  border: "none",
+                  padding: "3px 8px",
+                  fontSize: "11px",
+                  fontWeight: 700,
+                  borderRadius: "3px",
+                  cursor: "pointer",
+                }}
+              >
+                TYPESCRIPT (PINE-TS)
+              </button>
+              <button
                 onClick={() => setLanguage("javascript")}
                 style={{
                   background: language === "javascript" ? "rgba(0, 229, 255, 0.2)" : "transparent",
@@ -296,7 +334,7 @@ export const ScriptEditorModal: React.FC<ScriptEditorModalProps> = ({
             <Editor
               height="100%"
               theme="vs-dark"
-              language={language === "pine" ? "javascript" : "javascript"}
+              language={language === "typescript" ? "typescript" : "javascript"}
               value={code}
               onChange={(v) => setCode(v || "")}
               options={{

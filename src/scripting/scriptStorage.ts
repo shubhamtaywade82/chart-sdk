@@ -205,12 +205,45 @@ avgVol = ta.sma(volume, 20)
 isBullBreak = ta.crossover(close, highestHigh[1]) and volume > avgVol * volMult
 isBearBreak = ta.crossunder(close, lowestLow[1]) and volume > avgVol * volMult
 
-if (isBullBreak)
-    strategy.entry("Break Long", strategy.long)
-
-if (isBearBreak)
-    strategy.close("Break Long")
+    if (isBullBreak) strategy.entry("Break Long", strategy.long)
+    if (isBearBreak) strategy.close("Break Long")
 `,
+  },
+  {
+    id: "builtin_ts_ema_cross",
+    name: "Pine-TS: EMA Cross Indicator",
+    type: "indicator",
+    language: "typescript",
+    overlay: true,
+    isBuiltIn: true,
+    updatedAt: Date.now(),
+    code: `(ctx, { plot, plotshape, ta }) => {
+  const fast = ta.ema(ctx.close, 9);
+  const slow = ta.ema(ctx.close, 21);
+  plot(fast.value, { title: "Fast EMA 9", color: "#00E5FF", lineWidth: 2 });
+  plot(slow.value, { title: "Slow EMA 21", color: "#FFA726", lineWidth: 2 });
+  const bull = ta.crossover(fast, slow).value;
+  const bear = ta.crossunder(fast, slow).value;
+  plotshape(bull, { style: "triangleup", location: "belowbar", color: "#00F5A0", text: "BUY" });
+  plotshape(bear, { style: "triangledown", location: "abovebar", color: "#FF495C", text: "SELL" });
+}`,
+  },
+  {
+    id: "builtin_ts_ma_strategy",
+    name: "Pine-TS: Trend MA Strategy",
+    type: "strategy",
+    language: "typescript",
+    overlay: true,
+    isBuiltIn: true,
+    updatedAt: Date.now(),
+    code: `(ctx, { plot, strategy, ta }) => {
+  const fast = ta.sma(ctx.close, 10);
+  const slow = ta.sma(ctx.close, 20);
+  plot(fast.value, { title: "Fast SMA 10", color: "#00E5FF" });
+  plot(slow.value, { title: "Slow SMA 20", color: "#FFD700" });
+  if (ta.crossover(fast, slow).value) strategy.entry("Long", "LONG");
+  else if (ta.crossunder(fast, slow).value) strategy.close("Long");
+}`,
   },
 ];
 
@@ -219,33 +252,21 @@ const STORAGE_KEY = "chart_custom_scripts";
 export const getSavedScripts = (): UserScript[] => {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
-    if (raw) {
-      const userScripts: UserScript[] = JSON.parse(raw);
-      return [...BUILTIN_SCRIPTS, ...userScripts];
-    }
+    if (raw) return [...BUILTIN_SCRIPTS, ...JSON.parse(raw)];
   } catch {}
   return [...BUILTIN_SCRIPTS];
 };
 
 export const saveUserScript = (script: Omit<UserScript, "updatedAt">): UserScript => {
-  const updatedScript: UserScript = {
-    ...script,
-    updatedAt: Date.now(),
-  };
-
+  const updatedScript: UserScript = { ...script, updatedAt: Date.now() };
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     const existing: UserScript[] = raw ? JSON.parse(raw) : [];
     const idx = existing.findIndex((s) => s.id === script.id);
-
-    if (idx >= 0) {
-      existing[idx] = updatedScript;
-    } else {
-      existing.push(updatedScript);
-    }
+    if (idx >= 0) existing[idx] = updatedScript;
+    else existing.push(updatedScript);
     localStorage.setItem(STORAGE_KEY, JSON.stringify(existing));
   } catch {}
-
   return updatedScript;
 };
 
@@ -254,17 +275,17 @@ export const deleteUserScript = (id: string): void => {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (!raw) return;
     const existing: UserScript[] = JSON.parse(raw);
-    const filtered = existing.filter((s) => s.id !== id);
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(filtered));
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(existing.filter((s) => s.id !== id)));
   } catch {}
 };
 
 export const exportScriptFile = (script: UserScript): void => {
+  const ext = script.language === "typescript" ? "ts" : script.language === "javascript" ? "js" : "pine";
   const blob = new Blob([script.code], { type: "text/plain;charset=utf-8" });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
-  a.download = `${script.name.toLowerCase().replace(/[^a-z0-9]/g, "_")}.pine`;
+  a.download = `${script.name.toLowerCase().replace(/[^a-z0-9]/g, "_")}.${ext}`;
   a.click();
   URL.revokeObjectURL(url);
 };
