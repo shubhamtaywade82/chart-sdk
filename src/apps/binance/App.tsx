@@ -1,4 +1,5 @@
-import { BinanceAdapter } from "../../adapters/BinanceAdapter";
+import { BinanceAdapter, normalizeBinanceInterval } from "../../adapters/BinanceAdapter";
+import type { Candle } from "../../adapters/IDataAdapter";
 const adapterInstance = new BinanceAdapter();
 
 import React, { useEffect, useState } from "react";
@@ -140,9 +141,14 @@ export function App() {
 
   // Real-time tick & depth state
   const [tick, setTick] = useState<TickData | null>(null);
+  const [candle, setCandle] = useState<Candle | null>(null);
   const [wsConnected, setWsConnected] = useState(false);
   const [session, setSession] = useState<SessionInfo | null>(null);
   const wsRef = React.useRef<WebSocket | null>(null);
+  const selectedSymbolRef = React.useRef(selectedSymbol);
+  selectedSymbolRef.current = selectedSymbol;
+  const selectedIntervalRef = React.useRef(selectedInterval);
+  selectedIntervalRef.current = selectedInterval;
 
   // Symbol subscription is handled inside the main WebSocket useEffect below
   // (sending a new subscribe message on reconnect is sufficient)
@@ -248,16 +254,43 @@ export function App() {
           if (!isCleanedUp) {
             retryCount = 0;
             setWsConnected(true);
-            ws?.send(JSON.stringify({ type: "subscribe", symbol: selectedSymbol }));
+            ws?.send(JSON.stringify({
+              type: "subscribe",
+              symbol: selectedSymbolRef.current,
+              interval: normalizeBinanceInterval(selectedIntervalRef.current),
+            }));
           }
         };
         ws.onmessage = (event) => {
           if (isCleanedUp) return;
           try {
             const data = JSON.parse(event.data);
+            const curSym = selectedSymbolRef.current.toLowerCase();
             if (data.type === "tick") {
-              if (data.securityId && String(data.securityId).toLowerCase() !== selectedSymbol.toLowerCase()) return;
+              if (data.securityId && String(data.securityId).toLowerCase() !== curSym) return;
               setTick(data);
+            } else if (data.type === "candle" && data.candle) {
+              if (data.symbol && data.symbol.toLowerCase() !== curSym) return;
+              const c = data.candle;
+              setCandle({
+                time: Math.floor(c.t > 1e11 ? c.t / 1000 : c.t || c.time),
+                open: Number(c.o ?? c.open),
+                high: Number(c.h ?? c.high),
+                low: Number(c.l ?? c.low),
+                close: Number(c.c ?? c.close),
+                volume: Number(c.v ?? c.volume ?? 0),
+              });
+            } else if (data.type === "snapshot" && Array.isArray(data.candles) && data.candles.length > 0) {
+              if (data.symbol && data.symbol.toLowerCase() !== curSym) return;
+              const c = data.candles[data.candles.length - 1];
+              setCandle({
+                time: Math.floor(c.t > 1e11 ? c.t / 1000 : c.t || c.time),
+                open: Number(c.o ?? c.open),
+                high: Number(c.h ?? c.high),
+                low: Number(c.l ?? c.low),
+                close: Number(c.c ?? c.close),
+                volume: Number(c.v ?? c.volume ?? 0),
+              });
             }
           } catch (e) {}
         };
@@ -276,17 +309,38 @@ export function App() {
       clearInterval(sessionTimer);
       if (reconnectTimer) clearTimeout(reconnectTimer);
       if (ws) {
-        // Strip listeners to prevent aborted socket from firing reconnects or errors
         ws.onopen = null;
         ws.onmessage = null;
         ws.onerror = null;
         ws.onclose = null;
-        try {
-          ws.close(1000, "Unmounted");
-        } catch {}
+        const socket = ws;
+        if (socket.readyState === WebSocket.CONNECTING) {
+          // Defer closing until open to prevent browser DEV StrictMode abortion error
+          socket.onopen = () => {
+            try { socket.close(1000, "Unmounted"); } catch {}
+          };
+        } else if (socket.readyState === WebSocket.OPEN) {
+          try {
+            socket.close(1000, "Unmounted");
+          } catch {}
+        }
       }
     };
   }, [selectedSymbol]);
+
+  // Re-subscribe seamlessly on existing socket when symbol or interval changes
+  useEffect(() => {
+    setCandle(null);
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      try {
+        wsRef.current.send(JSON.stringify({
+          type: "subscribe",
+          symbol: selectedSymbol,
+          interval: normalizeBinanceInterval(selectedInterval),
+        }));
+      } catch {}
+    }
+  }, [selectedSymbol, selectedInterval]);
 
   // Fetch tab-specific data on demand & periodic background refresh for funds
   useEffect(() => {
@@ -817,6 +871,7 @@ export function App() {
                     interval={selectedInterval}
                     livePrice={tick?.ltp}
                     tick={tick}
+                    candle={candle || undefined}
                     positions={execMode === "real" ? positions : undefined}
                     orders={execMode === "real" ? orders : undefined}
                   />

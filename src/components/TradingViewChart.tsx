@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from "react";
-import type { IDataAdapter, PerpetualMetrics } from "../adapters/IDataAdapter";
+import type { IDataAdapter, PerpetualMetrics, Candle } from "../adapters/IDataAdapter";
 import { createPortal } from "react-dom";
 import {
   createChart,
@@ -268,6 +268,7 @@ export interface ChartProps {
   livePrice?: number;
   customCandles?: any[];
   tick?: any;
+  candle?: Candle;
   positions?: any[];  // real broker positions — drawn as entry/SL/TP price lines (supersedes paper position lines)
   orders?: any[];     // real broker open limit/stop orders — drawn as order price lines
 }
@@ -465,7 +466,7 @@ const DEFAULT_SCALE_SETTINGS: ChartScaleSettings = {
 };
 
 export const TradingViewChart: React.FC<ChartProps> = (props) => {
-  const { adapter, symbol, interval, showIndicators = true, livePrice, customCandles, tick, positions, orders } = props;
+  const { adapter, symbol, interval, showIndicators = true, livePrice, customCandles, tick, candle, positions, orders } = props;
   const chartContainerRef = useRef<HTMLDivElement>(null);
   const legendRef = useRef<HTMLDivElement>(null);
   const orderPriceLinesRef = useRef<Map<string, IPriceLine>>(new Map());
@@ -665,6 +666,8 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
   const smcResultsRef = useRef<any>({ version: "" });
   const htfResultsRef = useRef<any>({ version: "" });
   const drawPendingRef = useRef(false);
+  const lastDrawTimeRef = useRef<number>(0);
+  const drawThrottleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastDrawnCandleRef = useRef("");
   const scanVersionRef = useRef("");
   const scanPriceRef = useRef<number | null>(null);
@@ -745,6 +748,28 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
       drawPendingRef.current = false;
       smcPrimitiveRef.current?.requestUpdate();
     });
+  };
+
+  // Throttles expensive SMC/ICT canvas drawing to at most 4Hz during active market ticks
+  const scheduleDrawThrottled = (immediate = false) => {
+    const now = Date.now();
+    const elapsed = now - lastDrawTimeRef.current;
+    const THROTTLE_MS = 250;
+
+    if (immediate || elapsed >= THROTTLE_MS) {
+      if (drawThrottleTimerRef.current) {
+        clearTimeout(drawThrottleTimerRef.current);
+        drawThrottleTimerRef.current = null;
+      }
+      lastDrawTimeRef.current = now;
+      scheduleDraw();
+    } else if (!drawThrottleTimerRef.current) {
+      drawThrottleTimerRef.current = setTimeout(() => {
+        drawThrottleTimerRef.current = null;
+        lastDrawTimeRef.current = Date.now();
+        scheduleDraw();
+      }, THROTTLE_MS - elapsed);
+    }
   };
 
   // Full VWAP recompute — used whenever authoritative (real-volume) candle data lands,
@@ -3777,7 +3802,50 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
     };
   }, [symbol, interval, showIndicators, customCandles]);
 
-  // 3. 60 FPS LERP Animation Loop for Smooth Price Line & Volume Bar Transitions
+  // 2. Real-Time Authoritative Candle Stream Handler
+  useEffect(() => {
+    if (!candle || !seriesRef.current) return;
+    if (!candle.time || isNaN(candle.close)) return;
+
+    lastCandleValRef.current = candle;
+    targetPriceRef.current = candle.close;
+    if (currentVisualPriceRef.current === null) {
+      currentVisualPriceRef.current = candle.close;
+    }
+
+    try {
+      seriesRef.current.update(candle);
+      if (volumeSeriesRef.current) {
+        volumeSeriesRef.current.update({
+          time: candle.time,
+          value: candle.volume,
+          color: candle.close >= candle.open ? activeThemeRef.current.volUpColor : activeThemeRef.current.volDownColor,
+        });
+      }
+      if (vwapSeriesRef.current) {
+        const step = stepSessionVWAP(vwapAccumRef.current, candle);
+        vwapSeriesRef.current.update(step.point);
+        vwapUpperRef.current?.update(step.upper);
+        vwapLowerRef.current?.update(step.lower);
+      }
+    } catch (e) {}
+
+    const all = allCandlesRef.current;
+    if (all.length > 0) {
+      const last = all[all.length - 1];
+      if (last.time === candle.time) {
+        all[all.length - 1] = candle;
+      } else if (candle.time > last.time) {
+        allCandlesRef.current = [...all, candle].slice(-MAX_CANDLES_IN_MEMORY);
+      }
+    } else {
+      allCandlesRef.current = [candle];
+    }
+
+    scheduleDrawThrottled();
+  }, [candle]);
+
+  // 3. Smooth Price Line & Bid/Ask Line Gliding Loop
   // Update target price on livePrice prop changes without resetting RAF loop
   useEffect(() => {
     if (livePrice !== undefined && livePrice !== null) {
@@ -3788,7 +3856,6 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
     }
   }, [livePrice]);
 
-  // 3. 60 FPS LERP Animation Loop for Smooth Price Line & Volume Bar Transitions
   useEffect(() => {
     const barSeconds = intervalToSeconds(interval);
     let animId: number;
@@ -3805,10 +3872,10 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
         const lastBarTime = lastCandleValRef.current.time || 0;
 
         const rawTargetLtp = targetPriceRef.current;
-
-        // Smooth 60 FPS LERP Interpolation (alpha = 0.08 for ~250ms visual gliding)
         const priceDiff = rawTargetLtp - currentVisualPriceRef.current;
-        if (Math.abs(priceDiff) > 1e-9) {
+        const hasPriceDiff = Math.abs(priceDiff) > 1e-6;
+
+        if (hasPriceDiff) {
           currentVisualPriceRef.current += priceDiff * 0.08;
         } else {
           currentVisualPriceRef.current = rawTargetLtp;
@@ -3816,112 +3883,52 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
 
         const displayPrice = currentVisualPriceRef.current;
 
-        // Bar Boundary Protection: Lock closed candle & start NEW forming candle
-        if (lastBarTime > 0 && targetBarTime >= lastBarTime + barSeconds) {
-          const newCandle = {
-            time: targetBarTime,
-            open: rawTargetLtp,
-            high: rawTargetLtp,
-            low: rawTargetLtp,
-            close: displayPrice,
-            volume: 10,
-          };
-          currentVisualVolumeRef.current = 10;
-          targetVolumeRef.current = 10;
-          lastCandleValRef.current = newCandle;
-          allCandlesRef.current = [...allCandlesRef.current, newCandle].slice(-MAX_CANDLES_IN_MEMORY);
+        // Fallback synthetic candle synthesis only when NO authoritative live candle stream exists
+        if (!candle) {
+          if (lastBarTime > 0 && targetBarTime >= lastBarTime + barSeconds) {
+            const newCandle = {
+              time: targetBarTime,
+              open: rawTargetLtp,
+              high: rawTargetLtp,
+              low: rawTargetLtp,
+              close: displayPrice,
+              volume: 1,
+            };
+            currentVisualVolumeRef.current = 1;
+            targetVolumeRef.current = 1;
+            lastCandleValRef.current = newCandle;
+            allCandlesRef.current = [...allCandlesRef.current, newCandle].slice(-MAX_CANDLES_IN_MEMORY);
 
-          try {
-            seriesRef.current.update(newCandle);
-            if (volumeSeriesRef.current) {
-              volumeSeriesRef.current.update({
-                time: targetBarTime,
-                value: 10,
-                color: activeThemeRef.current.volUpColor,
-              });
-            }
-            if (vwapSeriesRef.current) {
-              const step = stepSessionVWAP(vwapAccumRef.current, newCandle);
-              vwapSeriesRef.current.update(step.point);
-              vwapUpperRef.current?.update(step.upper);
-              vwapLowerRef.current?.update(step.lower);
-            }
+            try {
+              seriesRef.current.update(newCandle);
+              if (volumeSeriesRef.current) {
+                volumeSeriesRef.current.update({
+                  time: targetBarTime,
+                  value: 1,
+                  color: activeThemeRef.current.volUpColor,
+                });
+              }
+            } catch (e) {}
+            scheduleDrawThrottled();
+          } else if (hasPriceDiff) {
+            const activeCandle = { ...lastCandleValRef.current };
+            activeCandle.close = displayPrice;
+            activeCandle.high = Math.max(activeCandle.high ?? displayPrice, displayPrice);
+            activeCandle.low = Math.min(activeCandle.low ?? displayPrice, displayPrice);
+            lastCandleValRef.current = activeCandle;
 
-            // Reconcile ALL previous candles with the Binance authoritative intraday endpoint 2.5s post-close
-            setTimeout(async () => {
-              try {
-                if (symbolRef.current !== symbol || intervalRef.current !== interval || !seriesRef.current) return;
-                const fresh = await props.adapter.fetchCandles(symbol, interval);
-                if (symbolRef.current !== symbol || intervalRef.current !== interval || !seriesRef.current) return;
-                if (fresh?.length && seriesRef.current) {
-                  const is24x7 = adapter?.is24x7 ?? true;
-                  // Merge with existing history rather than replacing it — see the 60s
-                  // reconciliation timer above for why (preserves lazy-loaded back-scroll).
-                  const authoritativeCandles = sanitizeAndSortCandles(
-                    allCandlesRef.current.length > 0 ? [...allCandlesRef.current, ...fresh] : fresh,
-                    is24x7
-                  ).slice(-MAX_CANDLES_IN_MEMORY);
-                  if (authoritativeCandles.length > 0) {
-                    allCandlesRef.current = authoritativeCandles;
-
-                    const formattedVolume = authoritativeCandles.map((c: any) => ({
-                      time: c.time,
-                      value: c.volume,
-                      color: c.close >= c.open ? activeThemeRef.current.volUpColor : activeThemeRef.current.volDownColor,
-                    }));
-
-                    seriesRef.current.setData(authoritativeCandles);
-                    if (volumeSeriesRef.current) {
-                      volumeSeriesRef.current.setData(formattedVolume);
-                    }
-                    resyncVWAP(authoritativeCandles);
-                  }
-                }
-              } catch (e) {}
-            }, 2500);
-          } catch (e) {}
-        } else {
-          // Update active forming candle smoothly: high/low expand gradually with displayPrice
-          const activeCandle = { ...lastCandleValRef.current };
-          activeCandle.close = displayPrice;
-          activeCandle.high = Math.max(activeCandle.high ?? displayPrice, displayPrice);
-          activeCandle.low = Math.min(activeCandle.low ?? displayPrice, displayPrice);
-
-          // Volume LERP Step: smooth alpha = 0.08
-          if (targetVolumeRef.current !== null && currentVisualVolumeRef.current !== null) {
-            const volDiff = targetVolumeRef.current - currentVisualVolumeRef.current;
-            if (Math.abs(volDiff) > 0.1) {
-              currentVisualVolumeRef.current += volDiff * 0.08;
-            } else {
-              currentVisualVolumeRef.current = targetVolumeRef.current;
-            }
-            activeCandle.volume = Math.round(currentVisualVolumeRef.current);
+            try {
+              seriesRef.current.update(activeCandle);
+            } catch (e) {}
+            scheduleDrawThrottled();
           }
-
-          lastCandleValRef.current = activeCandle;
-
-          try {
-            seriesRef.current.update(activeCandle);
-            if (volumeSeriesRef.current) {
-              volumeSeriesRef.current.update({
-                time: activeCandle.time,
-                value: activeCandle.volume,
-                color: activeCandle.close >= activeCandle.open ? activeThemeRef.current.volUpColor : activeThemeRef.current.volDownColor,
-              });
-            }
-          } catch (e) {}
-        }
-        const drawnCandle = lastCandleValRef.current;
-        const candleKey = drawnCandle ? `${drawnCandle.time}:${drawnCandle.close}:${drawnCandle.high}:${drawnCandle.low}` : "";
-        if (candleKey !== lastDrawnCandleRef.current) {
-          lastDrawnCandleRef.current = candleKey;
-          scheduleDraw();
         }
 
-        // 60 FPS LERP Interpolation for Best Bid Price Line (alpha = 0.08)
+        // LERP Interpolation for Best Bid Price Line
         if (targetBidRef.current !== null && currentVisualBidRef.current !== null && seriesRef.current) {
           const bidDiff = targetBidRef.current - currentVisualBidRef.current;
-          if (Math.abs(bidDiff) > 1e-9) {
+          const hasBidDiff = Math.abs(bidDiff) > 1e-6;
+          if (hasBidDiff) {
             currentVisualBidRef.current += bidDiff * 0.08;
           } else {
             currentVisualBidRef.current = targetBidRef.current;
@@ -3938,25 +3945,22 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
                 title: "BID",
               });
             } catch (e) {}
-          } else {
+          } else if (hasBidDiff) {
             try {
               bidLineRef.current.applyOptions({ price: currentVisualBidRef.current });
             } catch (e) {}
           }
         }
 
-        // 60 FPS LERP Interpolation for Best Ask Price Line (alpha = 0.08)
+        // LERP Interpolation for Best Ask Price Line
         if (targetAskRef.current !== null && currentVisualAskRef.current !== null && seriesRef.current) {
           const askDiff = targetAskRef.current - currentVisualAskRef.current;
-          if (Math.abs(askDiff) > 1e-9) {
+          const hasAskDiff = Math.abs(askDiff) > 1e-6;
+          if (hasAskDiff) {
             currentVisualAskRef.current += askDiff * 0.08;
           } else {
             currentVisualAskRef.current = targetAskRef.current;
           }
-
-          const spread = Math.max(0, (currentVisualAskRef.current || 0) - (currentVisualBidRef.current || 0));
-          const pricePrec = getPricePrecision(currentVisualAskRef.current || currentVisualBidRef.current || targetPriceRef.current || 0).precision;
-          const spreadText = `$${formatPriceDynamic(spread, pricePrec)}`;
 
           if (!askLineRef.current) {
             try {
@@ -3969,7 +3973,7 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
                 title: "ASK",
               });
             } catch (e) {}
-          } else {
+          } else if (hasAskDiff) {
             try {
               askLineRef.current.applyOptions({
                 price: currentVisualAskRef.current,
@@ -3985,7 +3989,7 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
 
     animId = requestAnimationFrame(animateLerp);
     return () => cancelAnimationFrame(animId);
-  }, [interval, symbol]);
+  }, [interval, symbol, candle]);
 
   // Reset Bid / Ask Price Line Refs whenever symbol or interval changes
   useEffect(() => {

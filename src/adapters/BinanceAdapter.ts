@@ -14,7 +14,7 @@ const safeCloseSocket = (socket: WebSocket | null) => {
   } catch {}
 };
 
-function normalizeBinanceInterval(interval: string): string {
+export function normalizeBinanceInterval(interval: string): string {
   const s = (interval || "15").toLowerCase().trim();
   if (s === "1d" || s === "d" || s === "day") return "1d";
   if (s === "60" || s === "60m" || s === "1h") return "1h";
@@ -164,7 +164,7 @@ export class BinanceAdapter implements IDataAdapter {
         ws.onopen = () => {
           retryCount = 0;
           if (!usePublicFallback) {
-            try { ws?.send(JSON.stringify({ type: "subscribe", symbol })); } catch {}
+            try { ws?.send(JSON.stringify({ type: "subscribe", symbol, interval: binanceInterval })); } catch {}
           }
         };
 
@@ -197,7 +197,17 @@ export class BinanceAdapter implements IDataAdapter {
 
             // Local Backend Proxy Messages
             if (msg.securityId && String(msg.securityId).toLowerCase() !== symbol.toLowerCase()) return;
-            if (msg.type === "candle" && msg.candle) onCandle(msg.candle);
+            if (msg.type === "candle" && msg.candle) {
+              const c = msg.candle;
+              onCandle({
+                time: Math.floor(c.t > 1e11 ? c.t / 1000 : c.t || c.time),
+                open: Number(c.o ?? c.open),
+                high: Number(c.h ?? c.high),
+                low: Number(c.l ?? c.low),
+                close: Number(c.c ?? c.close),
+                volume: Number(c.v ?? c.volume ?? 0),
+              });
+            }
             if (msg.type === "tick") {
               const bid = msg.bids?.[0]?.price ?? msg.price ?? 0;
               const ask = msg.asks?.[0]?.price ?? msg.price ?? 0;

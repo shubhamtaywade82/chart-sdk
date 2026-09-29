@@ -250,11 +250,6 @@ export class SymbolEngine extends EventEmitter {
       return;
     }
     if (result !== "applied") return;
-
-    const now = Date.now();
-    const state = this.book.getState();
-    this.trackLevelAges(state.bids.map((l) => l.price), this.prevBidPrices, this.bidFirstSeen, now);
-    this.trackLevelAges(state.asks.map((l) => l.price), this.prevAskPrices, this.askFirstSeen, now);
     this.pendingBookUpdate = true;
   }
 
@@ -299,8 +294,7 @@ export class SymbolEngine extends EventEmitter {
   }
 
   /** Walls, plus which of those walls show absorption right now — computed together since absorption is evaluated per-wall. */
-  private computeCurrentSignals(): { walls: WallLevel[]; absorptions: AbsorptionEvent[] } {
-    const state = this.book.getState();
+  private computeCurrentSignals(state = this.book.getState()): { walls: WallLevel[]; absorptions: AbsorptionEvent[] } {
     const now = Date.now();
     const wallOpts = { minQty: WALL_MIN_QTY, persistenceMs: WALL_PERSISTENCE_MS };
     const walls = [
@@ -316,11 +310,40 @@ export class SymbolEngine extends EventEmitter {
     return { walls, absorptions };
   }
 
+  getLatestTick() {
+    const last = this.candles[this.candles.length - 1];
+    const prev = this.candles[this.candles.length - 2];
+    const state = this.book.getState();
+    const bestBid = state.bids[0]?.price;
+    const bestAsk = state.asks[0]?.price;
+    const midPrice = bestBid != null && bestAsk != null ? (bestBid + bestAsk) / 2 : undefined;
+    const ltp = this.trades[0]?.price ?? midPrice ?? last?.c ?? 0;
+    const prevClose = prev?.c ?? ltp;
+    return {
+      type: "tick",
+      symbol: this.symbol,
+      securityId: this.symbol.toUpperCase(),
+      ltp,
+      prevClose,
+      change: Number((ltp - prevClose).toFixed(2)),
+      pChange: prevClose > 0 ? Number((((ltp - prevClose) / prevClose) * 100).toFixed(2)) : 0,
+      volume: last?.v ?? 0,
+      bids: state.bids.slice(0, 10).map((l) => ({ price: l.price, quantity: l.qty, orders: 1 })),
+      asks: state.asks.slice(0, 10).map((l) => ({ price: l.price, quantity: l.qty, orders: 1 })),
+      timestamp: new Date().toISOString(),
+    };
+  }
+
   private flush(): void {
     if (this.pendingBookUpdate) {
       this.pendingBookUpdate = false;
       const state = this.book.getState();
-      const { walls, absorptions } = this.computeCurrentSignals();
+      const now = Date.now();
+      // Track level ages on near-the-money levels only during 100ms flush, not every raw depth chunk
+      this.trackLevelAges(state.bids.slice(0, 100).map((l) => l.price), this.prevBidPrices, this.bidFirstSeen, now);
+      this.trackLevelAges(state.asks.slice(0, 100).map((l) => l.price), this.prevAskPrices, this.askFirstSeen, now);
+
+      const { walls, absorptions } = this.computeCurrentSignals(state);
       this.emitUpdate({
         type: "book",
         symbol: this.symbol,

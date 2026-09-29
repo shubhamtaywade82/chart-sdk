@@ -123,12 +123,14 @@ export class WebSocketFeedService {
   private static broadcast(entry: SymbolEntry, msg: Exclude<EngineMessage, { type: "snapshot" }>): void {
     const payload = JSON.stringify(msg);
     const legacyPayload = msg.type === "candle" || msg.type === "book"
-      ? JSON.stringify(this.toLegacyTickFromUpdate(entry, msg))
+      ? JSON.stringify(entry.engine.getLatestTick())
       : null;
     for (const client of entry.clients) {
       if (client.readyState !== WebSocket.OPEN) continue;
-      client.send(payload);
-      if (legacyPayload) client.send(legacyPayload);
+      try {
+        client.send(payload);
+        if (legacyPayload) client.send(legacyPayload);
+      } catch {}
     }
   }
 
@@ -156,12 +158,5 @@ export class WebSocketFeedService {
       asks: snapshot.book.asks.map((l) => ({ price: l.price, quantity: l.qty, orders: 1 })),
       timestamp: new Date().toISOString(),
     };
-  }
-
-  private static toLegacyTickFromUpdate(
-    entry: SymbolEntry,
-    msg: Extract<EngineMessage, { type: "candle" } | { type: "book" }>
-  ) {
-    return this.toLegacyTick(entry.engine.getSnapshotMessage());
   }
 }

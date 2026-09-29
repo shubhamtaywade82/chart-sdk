@@ -16,6 +16,16 @@ export interface DepthSnapshotRaw {
 
 export type ApplyResult = "applied" | "dropped" | "gap";
 
+const MAX_BOOK_LEVELS = 500;
+
+function pruneBook(book: Map<number, number>, isBid: boolean) {
+  if (book.size <= MAX_BOOK_LEVELS) return;
+  const sorted = [...book.keys()].sort(isBid ? (a, b) => b - a : (a, b) => a - b);
+  for (let i = MAX_BOOK_LEVELS; i < sorted.length; i++) {
+    book.delete(sorted[i]);
+  }
+}
+
 function applyLevels(levels: [string, string][], book: Map<number, number>) {
   for (const [priceStr, qtyStr] of levels) {
     const price = Number(priceStr);
@@ -43,6 +53,8 @@ export class DepthBook {
     this.asks = new Map();
     applyLevels(snap.bids, this.bids);
     applyLevels(snap.asks, this.asks);
+    if (this.bids.size > MAX_BOOK_LEVELS) pruneBook(this.bids, true);
+    if (this.asks.size > MAX_BOOK_LEVELS) pruneBook(this.asks, false);
     this.lastUpdateId = snap.lastUpdateId;
     this.synced = false;
   }
@@ -59,6 +71,8 @@ export class DepthBook {
     applyLevels(evt.bids, this.bids);
     applyLevels(evt.asks, this.asks);
     this.lastUpdateId = evt.u;
+    if (this.bids.size > 750) pruneBook(this.bids, true);
+    if (this.asks.size > 750) pruneBook(this.asks, false);
     return "applied";
   }
 
