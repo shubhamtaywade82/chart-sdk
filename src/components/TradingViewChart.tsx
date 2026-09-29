@@ -504,7 +504,7 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
 
   // Helper to apply candle series options respecting active theme + hollow mode
   const applyCandleSeriesOptions = (theme: CandleTheme, hollow: boolean) => {
-    if (!seriesRef.current) return;
+    if (!chartRef.current || !seriesRef.current) return;
     if (hollow) {
       seriesRef.current.applyOptions({
         upColor: "#0F131C", // Hollow transparent body matching background
@@ -3787,11 +3787,11 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
     return () => {
       isSubscribed = false;
       clearInterval(reconcileTimer);
-      if (chart) {
-        chart.unsubscribeCrosshairMove(handleCrosshairMove);
-        chart.remove();
-        chartRef.current = null;
-      }
+      const c = chartRef.current || chart;
+      chartRef.current = null;
+      seriesRef.current = null;
+      volumeSeriesRef.current = null;
+      vwapSeriesRef.current = null;
       smcPrimitiveRef.current = null;
       bidLineRef.current = null;
       askLineRef.current = null;
@@ -3799,18 +3799,26 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
       currentVisualBidRef.current = null;
       targetAskRef.current = null;
       currentVisualAskRef.current = null;
+      if (c) {
+        try {
+          c.unsubscribeCrosshairMove(handleCrosshairMove);
+          c.remove();
+        } catch {}
+      }
     };
   }, [symbol, interval, showIndicators, customCandles]);
 
   // 2. Real-Time Authoritative Candle Stream Handler
   useEffect(() => {
-    if (!candle || !seriesRef.current) return;
+    if (!candle || !seriesRef.current || !chartRef.current) return;
     if (!candle.time || isNaN(candle.close)) return;
 
     lastCandleValRef.current = candle;
-    targetPriceRef.current = candle.close;
-    if (currentVisualPriceRef.current === null) {
-      currentVisualPriceRef.current = candle.close;
+    if (livePrice === undefined || livePrice === null) {
+      targetPriceRef.current = candle.close;
+      if (currentVisualPriceRef.current === null) {
+        currentVisualPriceRef.current = candle.close;
+      }
     }
 
     try {
@@ -3862,6 +3870,7 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
 
     const animateLerp = () => {
       if (
+        chartRef.current &&
         seriesRef.current &&
         lastCandleValRef.current &&
         targetPriceRef.current !== null &&
@@ -3883,45 +3892,47 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
 
         const displayPrice = currentVisualPriceRef.current;
 
-        // Fallback synthetic candle synthesis only when NO authoritative live candle stream exists
-        if (!candle) {
-          if (lastBarTime > 0 && targetBarTime >= lastBarTime + barSeconds) {
-            const newCandle = {
-              time: targetBarTime,
-              open: rawTargetLtp,
-              high: rawTargetLtp,
-              low: rawTargetLtp,
-              close: displayPrice,
-              volume: 1,
-            };
-            currentVisualVolumeRef.current = 1;
-            targetVolumeRef.current = 1;
-            lastCandleValRef.current = newCandle;
-            allCandlesRef.current = [...allCandlesRef.current, newCandle].slice(-MAX_CANDLES_IN_MEMORY);
+        // Keep active candle formation perfectly matching the live price line
+        if (lastBarTime > 0 && targetBarTime >= lastBarTime + barSeconds) {
+          const newCandle = {
+            time: targetBarTime,
+            open: rawTargetLtp,
+            high: rawTargetLtp,
+            low: rawTargetLtp,
+            close: displayPrice,
+            volume: 0,
+          };
+          currentVisualVolumeRef.current = 0;
+          targetVolumeRef.current = 0;
+          lastCandleValRef.current = newCandle;
+          allCandlesRef.current = [...allCandlesRef.current, newCandle].slice(-MAX_CANDLES_IN_MEMORY);
 
-            try {
-              seriesRef.current.update(newCandle);
-              if (volumeSeriesRef.current) {
-                volumeSeriesRef.current.update({
-                  time: targetBarTime,
-                  value: 1,
-                  color: activeThemeRef.current.volUpColor,
-                });
-              }
-            } catch (e) {}
-            scheduleDrawThrottled();
-          } else if (hasPriceDiff) {
-            const activeCandle = { ...lastCandleValRef.current };
-            activeCandle.close = displayPrice;
-            activeCandle.high = Math.max(activeCandle.high ?? displayPrice, displayPrice);
-            activeCandle.low = Math.min(activeCandle.low ?? displayPrice, displayPrice);
-            lastCandleValRef.current = activeCandle;
-
-            try {
-              seriesRef.current.update(activeCandle);
-            } catch (e) {}
-            scheduleDrawThrottled();
+          try {
+            seriesRef.current.update(newCandle);
+            if (volumeSeriesRef.current) {
+              volumeSeriesRef.current.update({
+                time: targetBarTime,
+                value: 0,
+                color: activeThemeRef.current.volUpColor,
+              });
+            }
+          } catch (e) {}
+          scheduleDrawThrottled();
+        } else if (hasPriceDiff) {
+          const activeCandle = { ...lastCandleValRef.current };
+          activeCandle.close = displayPrice;
+          activeCandle.high = Math.max(activeCandle.high ?? displayPrice, displayPrice);
+          activeCandle.low = Math.min(activeCandle.low ?? displayPrice, displayPrice);
+          lastCandleValRef.current = activeCandle;
+          const all = allCandlesRef.current;
+          if (all.length > 0) {
+            all[all.length - 1] = activeCandle;
           }
+
+          try {
+            seriesRef.current.update(activeCandle);
+          } catch (e) {}
+          scheduleDrawThrottled();
         }
 
         // LERP Interpolation for Best Bid Price Line
@@ -4022,7 +4033,7 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
 
   // Render visual Active Position Lines (Entry, SL, TP) on Chart Canvas
   useEffect(() => {
-    if (!seriesRef.current) return;
+    if (!chartRef.current || !seriesRef.current) return;
 
     const currentPos = paperAccount?.open;
     const isCurrentSymbol = currentPos && currentPos.symbol.toLowerCase() === symbol.toLowerCase();
@@ -4033,15 +4044,15 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
     );
     if (hasRealPos || !isCurrentSymbol || !currentPos) {
       if (posEntryLineRef.current) {
-        try { seriesRef.current.removePriceLine(posEntryLineRef.current); } catch {}
+        try { if (chartRef.current && seriesRef.current) seriesRef.current.removePriceLine(posEntryLineRef.current); } catch {}
         posEntryLineRef.current = null;
       }
       if (posStopLineRef.current) {
-        try { seriesRef.current.removePriceLine(posStopLineRef.current); } catch {}
+        try { if (chartRef.current && seriesRef.current) seriesRef.current.removePriceLine(posStopLineRef.current); } catch {}
         posStopLineRef.current = null;
       }
       if (posTargetLineRef.current) {
-        try { seriesRef.current.removePriceLine(posTargetLineRef.current); } catch {}
+        try { if (chartRef.current && seriesRef.current) seriesRef.current.removePriceLine(posTargetLineRef.current); } catch {}
         posTargetLineRef.current = null;
       }
       return;
@@ -4163,7 +4174,7 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
 
   // Render real broker position lines (Entry, SL, TP) from the positions prop
   useEffect(() => {
-    if (!seriesRef.current) return;
+    if (!chartRef.current || !seriesRef.current) return;
 
     const pos = Array.isArray(positions)
       ? positions.find((p) => String(p?.symbol || "").toLowerCase() === symbol.toLowerCase())
@@ -4171,7 +4182,11 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
 
     const removeLine = (ref: React.MutableRefObject<IPriceLine | null>) => {
       if (ref.current) {
-        try { seriesRef.current?.removePriceLine(ref.current); } catch {}
+        try {
+          if (chartRef.current && seriesRef.current) {
+            seriesRef.current.removePriceLine(ref.current);
+          }
+        } catch {}
         ref.current = null;
       }
     };
@@ -4296,7 +4311,7 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
 
   // Render real broker Open Limit & Stop Orders as price lines on chart
   useEffect(() => {
-    if (!seriesRef.current) return;
+    if (!chartRef.current || !seriesRef.current) return;
     const series = seriesRef.current;
     const currentLines = orderPriceLinesRef.current;
 
@@ -4363,7 +4378,11 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
     // Remove cancelled/filled orders
     for (const [id, line] of currentLines.entries()) {
       if (!activeOrderIds.has(id)) {
-        try { series.removePriceLine(line); } catch {}
+        try {
+          if (chartRef.current && series) {
+            series.removePriceLine(line);
+          }
+        } catch {}
         currentLines.delete(id);
       }
     }
@@ -4372,7 +4391,7 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
   // Cleanup price lines on unmount or series reset
   useEffect(() => {
     return () => {
-      if (seriesRef.current) {
+      if (chartRef.current && seriesRef.current) {
         if (bidLineRef.current) {
           try { seriesRef.current.removePriceLine(bidLineRef.current); } catch {}
           bidLineRef.current = null;
@@ -4408,7 +4427,6 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
         for (const line of orderPriceLinesRef.current.values()) {
           try { seriesRef.current.removePriceLine(line); } catch {}
         }
-        orderPriceLinesRef.current.clear();
       }
       bidLineRef.current = null;
       askLineRef.current = null;
@@ -4423,11 +4441,6 @@ export const TradingViewChart: React.FC<ChartProps> = (props) => {
       realPosStopLineRef.current = null;
       realPosTargetLineRef.current = null;
       orderPriceLinesRef.current.clear();
-      posStopLineRef.current = null;
-      posTargetLineRef.current = null;
-      realPosEntryLineRef.current = null;
-      realPosStopLineRef.current = null;
-      realPosTargetLineRef.current = null;
     };
   }, []);
 

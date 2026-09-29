@@ -5,7 +5,8 @@ import { computeCVD, computeImbalance, computeWindowedCVD, detectAbsorption, det
 import { fetchDepthSnapshot, fetchFundingAndOI, fetchKlines } from "./binanceRest";
 import { AbsorptionEvent, EngineCandle, EngineMessage, EngineTrade, FundingInfo, LiquidationEvent, WallLevel } from "./types";
 
-const WS_BASE = "wss://fstream.binance.com";
+const WS_MARKET = "wss://fstream.binance.com/market";
+const WS_PUBLIC = "wss://fstream.binance.com/public";
 const KLINE_SEED_COUNT = 500;
 const DEPTH_SNAPSHOT_LIMIT = 1000;
 const DEPTH_BROADCAST_LEVELS = 50;
@@ -41,7 +42,8 @@ export class SymbolEngine extends EventEmitter {
   private depthEventBuffer: DepthEvent[] = [];
   private depthSnapshotLoaded = false;
 
-  private ws: WebSocket | null = null;
+  private marketWs: WebSocket | null = null;
+  private publicWs: WebSocket | null = null;
   private reconnectAttempts = 0;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private fundingTimer: ReturnType<typeof setInterval> | null = null;
@@ -78,15 +80,17 @@ export class SymbolEngine extends EventEmitter {
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
     if (this.fundingTimer) clearInterval(this.fundingTimer);
     if (this.flushTimer) clearInterval(this.flushTimer);
-    if (this.ws) {
-      this.ws.removeAllListeners();
-      // Closing a still-CONNECTING socket makes `ws` emit 'error' asynchronously (abortHandshake);
-      // removeAllListeners() just stripped that listener, so without this the emit has none and
-      // crashes the process (found while verifying Fix 2's crash-prevention live).
-      this.ws.on("error", () => {});
-      try { this.ws.close(); } catch {}
-      this.ws = null;
-    }
+    const closeWs = (w: WebSocket | null) => {
+      if (w) {
+        w.removeAllListeners();
+        w.on("error", () => {});
+        try { w.close(); } catch {}
+      }
+    };
+    closeWs(this.marketWs);
+    closeWs(this.publicWs);
+    this.marketWs = null;
+    this.publicWs = null;
   }
 
   getSnapshotMessage(): Extract<EngineMessage, { type: "snapshot" }> {
@@ -145,21 +149,33 @@ export class SymbolEngine extends EventEmitter {
 
   private connectStream(): void {
     if (this.destroyed) return;
-    const streams = [
+
+    // 1. Market Stream: Kline & aggTrade
+    const marketStreams = [
       `${this.symbol}@kline_${this.interval}`,
       `${this.symbol}@aggTrade`,
+    ].join("/");
+    const mWs = new WebSocket(`${WS_MARKET}/stream?streams=${marketStreams}`);
+    this.marketWs = mWs;
+
+    mWs.on("open", () => {
+      this.reconnectAttempts = 0;
+    });
+    mWs.on("message", (data) => this.handleMessage(data.toString()));
+    mWs.on("error", () => this.scheduleReconnect());
+    mWs.on("close", () => this.scheduleReconnect());
+
+    // 2. Public Stream: Depth & forceOrder
+    const publicStreams = [
       `${this.symbol}@depth@100ms`,
       `${this.symbol}@forceOrder`,
     ].join("/");
-    const ws = new WebSocket(`${WS_BASE}/stream?streams=${streams}`);
-    this.ws = ws;
+    const pWs = new WebSocket(`${WS_PUBLIC}/stream?streams=${publicStreams}`);
+    this.publicWs = pWs;
 
-    ws.on("open", () => {
-      this.reconnectAttempts = 0;
-    });
-    ws.on("message", (data) => this.handleMessage(data.toString()));
-    ws.on("error", () => this.scheduleReconnect());
-    ws.on("close", () => this.scheduleReconnect());
+    pWs.on("message", (data) => this.handleMessage(data.toString()));
+    pWs.on("error", () => this.scheduleReconnect());
+    pWs.on("close", () => this.scheduleReconnect());
   }
 
   private scheduleReconnect(): void {
@@ -170,6 +186,18 @@ export class SymbolEngine extends EventEmitter {
       this.reconnectTimer = null;
       if (this.destroyed) return;
       try {
+        const closeWs = (w: WebSocket | null) => {
+          if (w) {
+            w.removeAllListeners();
+            w.on("error", () => {});
+            try { w.close(); } catch {}
+          }
+        };
+        closeWs(this.marketWs);
+        closeWs(this.publicWs);
+        this.marketWs = null;
+        this.publicWs = null;
+
         await this.resyncDepth(); // reconnects always re-snapshot, per spec's resilience section
         this.connectStream();
       } catch (err) {
@@ -187,13 +215,13 @@ export class SymbolEngine extends EventEmitter {
       return;
     }
     const stream: string = msg.stream || "";
-    const d = msg.data;
+    const d = msg.data || msg;
     if (!d) return;
 
-    if (stream.endsWith(`@kline_${this.interval}`)) this.handleKline(d);
-    else if (stream.endsWith("@aggTrade")) this.handleTrade(d);
-    else if (stream.endsWith("@depth@100ms")) this.handleDepthEvent(d);
-    else if (stream.endsWith("@forceOrder")) this.handleLiquidation(d);
+    if (stream.endsWith(`@kline_${this.interval}`) || d.e === "kline") this.handleKline(d);
+    else if (stream.endsWith("@aggTrade") || d.e === "aggTrade" || d.e === "trade") this.handleTrade(d);
+    else if (stream.endsWith("@depth@100ms") || d.e === "depthUpdate") this.handleDepthEvent(d);
+    else if (stream.endsWith("@forceOrder") || d.e === "forceOrder") this.handleLiquidation(d);
   }
 
   private handleKline(d: any): void {
@@ -219,7 +247,7 @@ export class SymbolEngine extends EventEmitter {
 
   private handleTrade(d: any): void {
     const trade: EngineTrade = {
-      id: d.a,
+      id: d.a ?? d.t,
       time: d.T,
       price: Number(d.p),
       qty: Number(d.q),
@@ -229,6 +257,14 @@ export class SymbolEngine extends EventEmitter {
     this.trades.unshift(trade);
     if (this.trades.length > TRADE_BUFFER_SIZE) this.trades.length = TRADE_BUFFER_SIZE;
     this.pendingTrades.push(trade);
+
+    // Keep active candle OHLC aligned in real-time between kline updates
+    const last = this.candles[this.candles.length - 1];
+    if (last) {
+      if (trade.price > last.h) last.h = trade.price;
+      if (trade.price < last.l) last.l = trade.price;
+      last.c = trade.price;
+    }
   }
 
   private handleDepthEvent(d: any): void {
